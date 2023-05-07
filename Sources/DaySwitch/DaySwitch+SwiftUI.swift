@@ -32,24 +32,50 @@ public struct DayToggle: PlatformViewRepresentable {
 
 #if os(macOS)
     public func makeNSView(context: Context) -> DaySwitch {
-        DaySwitch(frame: .zero)
+        makePlatformView(context: context)
     }
 
     public func updateNSView(_ nsView: DaySwitch, context: Context) {
-        nsView.isDayLight = isDayLight
+        updatePlatformView(nsView, context: context)
+    }
+
+    @available(macOS 13.0, *)
+    public func sizeThatFits(_ proposal: ProposedViewSize, nsView: DaySwitch, context: Context) -> CGSize? {
+        sizeThatFits(proposal, platformView: nsView, context: context)
     }
 #endif
 #if os(iOS)
     public func makeUIView(context: Context) -> DaySwitch {
-        let `switch` = DaySwitch(frame: .zero)
-        `switch`.isDayLight = isDayLight
-        return `switch`
+        makePlatformView(context: context)
     }
 
     public func updateUIView(_ uiView: DaySwitch, context: Context) {
-        uiView.isDayLight = isDayLight
+        updatePlatformView(uiView, context: context)
+    }
+
+    @available(iOS 16.0, *)
+    public func sizeThatFits(_ proposal: ProposedViewSize, uiView: DaySwitch, context: Context) -> CGSize? {
+        sizeThatFits(proposal, platformView: uiView, context: context)
     }
 #endif
+    func makePlatformView(context: Context) -> DaySwitch {
+        let view = DaySwitch(frame: CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height))
+        view.isDayLight = isDayLight
+        return view
+    }
+
+    func updatePlatformView(_ view: DaySwitch, context: Context) {
+        view.isDayLight = isDayLight
+    }
+
+    @available(macOS 13.0, iOS 16.0, *)
+    func sizeThatFits(_ proposal: ProposedViewSize, platformView: DaySwitch, context: Context) -> CGSize? {
+        if let width = proposal.width, let height = proposal.height {
+            return CGSize(width: width, height: height)
+        } else {
+            return CGSize(width: Constant.width, height: Constant.height)
+        }
+    }
 }
 
 #if DEBUG
@@ -65,7 +91,7 @@ struct DayToggle_Previews: PreviewProvider {
 
         var body: some View {
             DayToggle(isDayLight: $isDayLight)
-                .frame(width: Constant.width, height: Constant.height)
+                .fixedSize()
         }
     }
 }

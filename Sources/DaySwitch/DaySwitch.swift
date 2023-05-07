@@ -17,22 +17,19 @@ public typealias PlatformView = NSView
 public typealias PlatformControl = NSControl
 public typealias PlatformGestureRecognizer = NSGestureRecognizer
 public typealias PlatformColor = NSColor
-public typealias PlatformRect = NSRect
-public typealias PlatformSize = NSSize
 #endif
 #if os(iOS)
 public typealias PlatformView = UIView
 public typealias PlatformControl = UIControl
 public typealias PlatformGestureRecognizer = UIGestureRecognizer
 public typealias PlatformColor = UIColor
-public typealias PlatformRect = CGRect
-public typealias PlatformSize = CGSize
 #endif
 
 extension PlatformColor {
     enum Day {
         static let sun = #colorLiteral(red: 1, green: 0.8298229575, blue: 0.2543709278, alpha: 1)
         static let darkSun = #colorLiteral(red: 0.9254901961, green: 0.7450980392, blue: 0.2117647059, alpha: 1)
+        static let sunShadow = #colorLiteral(red: 0.2823529412, green: 0.2431372549, blue: 0.1176470588, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.5411764706, green: 0.8980392157, blue: 1, alpha: 1)
         static let cloud = PlatformColor.white
         static let darkCloud = #colorLiteral(red: 0.9450980392, green: 0.9450980392, blue: 0.9450980392, alpha: 1)
@@ -41,6 +38,7 @@ extension PlatformColor {
     enum Night {
         static let moon = #colorLiteral(red: 0.8549019608, green: 0.8509803922, blue: 0.8431372549, alpha: 1)
         static let darkMoon = #colorLiteral(red: 0.5803921569, green: 0.5647058824, blue: 0.5529411765, alpha: 1)
+        static let moonShadow = PlatformColor.black
         static let hole = #colorLiteral(red: 0.7647058824, green: 0.7607843137, blue: 0.7450980392, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.09803921569, green: 0.09411764706, blue: 0.1450980392, alpha: 1)
         static let star = PlatformColor.white
@@ -63,9 +61,7 @@ extension CGRect {
 }
 
 open class DaySwitch: PlatformControl {
-    lazy var boundsObservation = observe(\.bounds) { `self`, change in
-        self.mainLayer.frame = self.bounds.centerRect(width: Constant.width, height: Constant.height)
-    }
+    var boundsObservation: NSKeyValueObservation?
 
     lazy var mainLayer = CALayer()
     lazy var indicatorLayer = createIndicatorLayer()
@@ -77,7 +73,7 @@ open class DaySwitch: PlatformControl {
         }
     }
 
-    public override init(frame: PlatformRect) {
+    public override init(frame: CGRect) {
         super.init(frame: frame)
         commonInit()
     }
@@ -87,8 +83,8 @@ open class DaySwitch: PlatformControl {
         commonInit()
     }
 
-    open override var intrinsicContentSize: PlatformSize {
-        PlatformSize(width: Constant.width, height: Constant.height)
+    open override var intrinsicContentSize: CGSize {
+        CGSize(width: Constant.width, height: Constant.height)
     }
 
 #if os(macOS)
@@ -106,9 +102,12 @@ open class DaySwitch: PlatformControl {
 private extension DaySwitch {
     func platformDidMoveToSuperview() {
         if superview == nil {
-            return boundsObservation.invalidate()
+            boundsObservation?.invalidate()
+            return
         }
-        _ = boundsObservation
+        boundsObservation = observe(\.bounds) { `self`, _ in
+            self.updateLayerFrame()
+        }
     }
 
     func commonInit() {
@@ -132,6 +131,10 @@ private extension DaySwitch {
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
     }
 
+    func updateLayerFrame() {
+        mainLayer.frame = self.bounds.centerRect(width: Constant.width, height: Constant.height)
+    }
+
     func didChangeState() {
         let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
         mainLayer.backgroundColor = mainBackgroundColor.cgColor
@@ -141,8 +144,18 @@ private extension DaySwitch {
         indicatorLayer.backgroundColor = indicatorBackgroundColor.cgColor
         let indicatorFrame = CGRect(x: isDayLight ? 4 : Constant.width - 4 - indicatorLayer.bounds.width, y: indicatorLayer.frame.origin.y, width: indicatorLayer.bounds.width, height: indicatorLayer.bounds.height)
         indicatorLayer.frame = indicatorFrame
+        let indicatorShadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
+        indicatorLayer.shadowColor = indicatorShadowColor.cgColor
+        let indicatorShadowOpacity: Float = isDayLight ? 0.25 : 0.2
+        indicatorLayer.shadowOpacity = indicatorShadowOpacity
+        let indicatorShadowOffset = isDayLight ? CGSize(width: 2, height: 2) : CGSize(width: -2, height: 2)
+        indicatorLayer.shadowOffset = indicatorShadowOffset
         indicatorLayer.add(backgroundAnimation(toValue: indicatorBackgroundColor), forKey: "backgroundColorAnim")
         indicatorLayer.add(frameAnimation(toValue: indicatorFrame), forKey: "frameAnim")
+        shadowAnimation(toShadowColor: indicatorShadowColor, shadowOpacity: indicatorShadowOpacity, shadowOffset: indicatorShadowOffset)
+            .forEach { key, value in
+                indicatorLayer.add(value, forKey: key)
+            }
     }
 
     @objc
@@ -157,25 +170,34 @@ private extension DaySwitch {
 
     func createIndicatorLayer() -> CALayer {
         let layer = CALayer()
-        let size = Constant.height - 8
+        let size = mainLayer.bounds.height - 8
         layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
         layer.cornerRadius = size / 2
+        layer.shadowRadius = 2
         return layer
     }
 }
 
-func backgroundAnimation(toValue value: PlatformColor, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
-    let anim = CABasicAnimation(keyPath: "backgroundColor")
-    anim.duration = duration
-    anim.toValue = value.cgColor
-    anim.timingFunction = timingFunction
-    return anim
-}
-
-func frameAnimation(toValue value: CGRect, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
-    let anim = CABasicAnimation(keyPath: "frame")
+func animation(keyPath: String, toValue value: Any?, duration: CFTimeInterval, timingFunction: CAMediaTimingFunction) -> CAAnimation {
+    let anim = CABasicAnimation(keyPath: keyPath)
     anim.duration = duration
     anim.toValue = value
     anim.timingFunction = timingFunction
     return anim
+}
+
+func shadowAnimation(toShadowColor color: PlatformColor? = nil, shadowOpacity: Float? = nil, shadowOffset: CGSize? = nil, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> [String: CAAnimation] {
+    var dict: [String: CAAnimation] = [:]
+    dict["shadowColorAnim"] = color.flatMap { animation(keyPath: "shadowColor", toValue: $0.cgColor, duration: duration, timingFunction: timingFunction) }
+    dict["shadowOpacityAnim"] = shadowOpacity.flatMap { animation(keyPath: "shadowOpacity", toValue: $0, duration: duration, timingFunction: timingFunction) }
+    dict["shadowOffsetAnim"] = shadowOffset.flatMap { animation(keyPath: "shadowOffset", toValue: $0, duration: duration, timingFunction: timingFunction) }
+    return dict
+}
+
+func backgroundAnimation(toValue value: PlatformColor, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
+    animation(keyPath: "backgroundColor", toValue: value.cgColor, duration: duration, timingFunction: timingFunction)
+}
+
+func frameAnimation(toValue value: CGRect, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
+    animation(keyPath: "frame", toValue: value, duration: duration, timingFunction: timingFunction)
 }
