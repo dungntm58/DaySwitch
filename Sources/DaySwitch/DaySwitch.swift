@@ -63,13 +63,13 @@ extension CGRect {
 open class DaySwitch: PlatformControl {
     var boundsObservation: NSKeyValueObservation?
 
-    lazy var mainLayer = CALayer()
-    lazy var indicatorLayer = createIndicatorLayer()
+    private lazy var mainLayer = CALayer()
+    private lazy var indicatorLayer = createIndicatorLayer()
 
     @objc
     open var isDayLight: Bool = true {
         didSet {
-            didChangeState()
+            didChangeState(oldValue: oldValue)
         }
     }
 
@@ -135,11 +135,26 @@ private extension DaySwitch {
         mainLayer.frame = self.bounds.centerRect(width: Constant.width, height: Constant.height)
     }
 
-    func didChangeState() {
+    func didChangeState(oldValue: Bool) {
+        if isDayLight == oldValue {
+            return
+        }
+#if os(macOS)
+        if let action {
+            NSApp.sendAction(action, to: target, from: self)
+        }
+#endif
+#if os(iOS)
+        sendActions(for: .valueChanged)
+#endif
         let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
         mainLayer.backgroundColor = mainBackgroundColor.cgColor
         mainLayer.add(backgroundAnimation(toValue: mainBackgroundColor), forKey: "backgroundColorAnim")
 
+        updateIndicator()
+    }
+
+    func updateIndicator() {
         let indicatorBackgroundColor = isDayLight ? PlatformColor.Day.sun : PlatformColor.Night.moon
         indicatorLayer.backgroundColor = indicatorBackgroundColor.cgColor
         let indicatorFrame = CGRect(x: isDayLight ? 4 : Constant.width - 4 - indicatorLayer.bounds.width, y: indicatorLayer.frame.origin.y, width: indicatorLayer.bounds.width, height: indicatorLayer.bounds.height)

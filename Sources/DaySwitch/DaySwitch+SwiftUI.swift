@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 #if os(macOS)
 import AppKit
 #endif
@@ -61,6 +62,7 @@ public struct DayToggle: PlatformViewRepresentable {
     func makePlatformView(context: Context) -> DaySwitch {
         let view = DaySwitch(frame: CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height))
         view.isDayLight = isDayLight
+        context.coordinator.observe(from: view)
         return view
     }
 
@@ -76,6 +78,29 @@ public struct DayToggle: PlatformViewRepresentable {
             return CGSize(width: Constant.width, height: Constant.height)
         }
     }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(isDayLight: $isDayLight)
+    }
+
+    public class Coordinator {
+        @Binding var isDayLight: Bool
+
+        var cancellables = Set<AnyCancellable>()
+
+        init(isDayLight: Binding<Bool>) {
+            self._isDayLight = isDayLight
+        }
+
+        func observe(from view: DaySwitch) {
+            view.publisher(for: \.isDayLight)
+                .receive(on: DispatchQueue.main)
+                .sink(receiveValue: { [weak self] value in
+                    self?.isDayLight = value
+                })
+                .store(in: &cancellables)
+        }
+    }
 }
 
 #if DEBUG
@@ -87,11 +112,14 @@ struct DayToggle_Previews: PreviewProvider {
     }
 
     struct Container: View {
-        @State var isDayLight: Bool = false
+        @State var isDayLight: Bool = true
 
         var body: some View {
-            DayToggle(isDayLight: $isDayLight)
-                .fixedSize()
+            VStack {
+                DayToggle(isDayLight: $isDayLight)
+                    .fixedSize()
+                Text(isDayLight ? "Day" : "Night")
+            }
         }
     }
 }
