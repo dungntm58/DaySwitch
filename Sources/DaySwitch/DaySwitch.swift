@@ -40,6 +40,7 @@ extension PlatformColor {
         static let darkMoon = #colorLiteral(red: 0.5803921569, green: 0.5647058824, blue: 0.5529411765, alpha: 1)
         static let moonShadow = PlatformColor.black
         static let hole = #colorLiteral(red: 0.7647058824, green: 0.7607843137, blue: 0.7450980392, alpha: 1)
+        static let holeShadow = #colorLiteral(red: 0.337254902, green: 0.337254902, blue: 0.337254902, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.09803921569, green: 0.09411764706, blue: 0.1450980392, alpha: 1)
         static let star = PlatformColor.white
         static let mountain = #colorLiteral(red: 0.7254901961, green: 0.7647058824, blue: 0.8039215686, alpha: 1)
@@ -65,11 +66,24 @@ open class DaySwitch: PlatformControl {
 
     private lazy var mainLayer = CALayer()
     private lazy var indicatorLayer = createIndicatorLayer()
+    private lazy var moonHoleLayer = createMoonHoleLayer()
+    private lazy var cloudLayer = createCloudLayer()
 
     @objc
     open var isDayLight: Bool = true {
         didSet {
-            didChangeState(oldValue: oldValue)
+            if isDayLight == oldValue {
+                return
+            }
+#if os(macOS)
+        if let action {
+            NSApp.sendAction(action, to: target, from: self)
+        }
+#endif
+#if os(iOS)
+        sendActions(for: .valueChanged)
+#endif
+            layoutLayer(needsAnimate: true)
         }
     }
 
@@ -106,71 +120,90 @@ private extension DaySwitch {
             return
         }
         boundsObservation = observe(\.bounds) { `self`, _ in
-            self.updateLayerFrame()
+            self.layoutLayer(needsAnimate: false)
         }
     }
 
     func commonInit() {
 #if os(macOS)
+        wantsLayer = true
+        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
         guard let layer else {
             return
         }
-        addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
 #endif
 #if os(iOS)
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
 #endif
+        layoutLayer(needsAnimate: false)
         layer.addSublayer(mainLayer)
-        mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
-        mainLayer.cornerRadius = Constant.height / 2
-
-        mainLayer.backgroundColor = PlatformColor.Day.spaceBar.cgColor
         mainLayer.addSublayer(indicatorLayer)
-
-        indicatorLayer.backgroundColor = PlatformColor.Day.sun.cgColor
+        mainLayer.addSublayer(moonHoleLayer)
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
     }
 
-    func updateLayerFrame() {
-        mainLayer.frame = self.bounds.centerRect(width: Constant.width, height: Constant.height)
+    func layoutLayer(needsAnimate: Bool) {
+        updateMainLayer(needsAnimate: needsAnimate)
+        updateIndicator(needsAnimate: needsAnimate)
+        updateCloud(needsAnimate: needsAnimate)
+        updateMoonHole(needsAnimate: needsAnimate)
     }
 
-    func didChangeState(oldValue: Bool) {
-        if isDayLight == oldValue {
+    func updateMainLayer(needsAnimate: Bool) {
+        let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
+        mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
+        mainLayer.backgroundColor = mainBackgroundColor.cgColor
+        mainLayer.cornerRadius = Constant.height / 2
+        guard needsAnimate else {
             return
         }
-#if os(macOS)
-        if let action {
-            NSApp.sendAction(action, to: target, from: self)
-        }
-#endif
-#if os(iOS)
-        sendActions(for: .valueChanged)
-#endif
-        let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
-        mainLayer.backgroundColor = mainBackgroundColor.cgColor
         mainLayer.add(backgroundAnimation(toValue: mainBackgroundColor), forKey: "backgroundColorAnim")
-
-        updateIndicator()
     }
 
-    func updateIndicator() {
-        let indicatorBackgroundColor = isDayLight ? PlatformColor.Day.sun : PlatformColor.Night.moon
-        indicatorLayer.backgroundColor = indicatorBackgroundColor.cgColor
-        let indicatorFrame = CGRect(x: isDayLight ? 4 : Constant.width - 4 - indicatorLayer.bounds.width, y: indicatorLayer.frame.origin.y, width: indicatorLayer.bounds.width, height: indicatorLayer.bounds.height)
-        indicatorLayer.frame = indicatorFrame
-        let indicatorShadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
-        indicatorLayer.shadowColor = indicatorShadowColor.cgColor
-        let indicatorShadowOpacity: Float = isDayLight ? 0.25 : 0.2
-        indicatorLayer.shadowOpacity = indicatorShadowOpacity
-        let indicatorShadowOffset = isDayLight ? CGSize(width: 2, height: 2) : CGSize(width: -2, height: 2)
-        indicatorLayer.shadowOffset = indicatorShadowOffset
-        indicatorLayer.add(backgroundAnimation(toValue: indicatorBackgroundColor), forKey: "backgroundColorAnim")
-        indicatorLayer.add(frameAnimation(toValue: indicatorFrame), forKey: "frameAnim")
-        shadowAnimation(toShadowColor: indicatorShadowColor, shadowOpacity: indicatorShadowOpacity, shadowOffset: indicatorShadowOffset)
+    func updateIndicator(needsAnimate: Bool) {
+        let backgroundColor = isDayLight ? PlatformColor.Day.sun : PlatformColor.Night.moon
+        indicatorLayer.backgroundColor = backgroundColor.cgColor
+        let frame = CGRect(x: isDayLight ? 4 : mainLayer.frame.width - 4 - indicatorLayer.bounds.width, y: indicatorLayer.frame.origin.y, width: indicatorLayer.bounds.width, height: indicatorLayer.bounds.height)
+        indicatorLayer.frame = frame
+        let shadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
+        indicatorLayer.shadowColor = shadowColor.cgColor
+        let shadowOpacity: Float = isDayLight ? 0.25 : 0.2
+        indicatorLayer.shadowOpacity = shadowOpacity
+#if os(macOS)
+        let shadowOffset = isDayLight ? CGSize(width: 2, height: -2) : CGSize(width: -2, height: -2)
+#endif
+#if os(iOS)
+        let shadowOffset = isDayLight ? CGSize(width: 2, height: 2) : CGSize(width: -2, height: 2)
+#endif
+        indicatorLayer.shadowOffset = shadowOffset
+
+        guard needsAnimate else {
+            return
+        }
+        indicatorLayer.add(backgroundAnimation(toValue: backgroundColor), forKey: "backgroundColorAnim")
+        indicatorLayer.add(frameAnimation(toValue: frame), forKey: "frameAnim")
+        shadowAnimation(toShadowColor: shadowColor, shadowOpacity: shadowOpacity, shadowOffset: shadowOffset)
             .forEach { key, value in
                 indicatorLayer.add(value, forKey: key)
             }
+    }
+
+    func updateCloud(needsAnimate: Bool) {
+        guard needsAnimate else {
+            return
+        }
+    }
+
+    func updateMoonHole(needsAnimate: Bool) {
+        let opacity: Float = isDayLight ? 0 : 1
+        moonHoleLayer.opacity = opacity
+        let frame = CGRect(x: isDayLight ? 4 : mainLayer.frame.width - 4 - moonHoleLayer.bounds.width, y: moonHoleLayer.frame.origin.y, width: moonHoleLayer.bounds.width, height: moonHoleLayer.bounds.height)
+        moonHoleLayer.frame = frame
+        guard needsAnimate else {
+            return
+        }
+        moonHoleLayer.add(opacityAnimation(toValue: opacity), forKey: "opacityAnim")
+        indicatorLayer.add(frameAnimation(toValue: frame), forKey: "frameAnim")
     }
 
     @objc
@@ -189,6 +222,45 @@ private extension DaySwitch {
         layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
         layer.cornerRadius = size / 2
         layer.shadowRadius = 2
+        return layer
+    }
+
+    func createCloudLayer() -> CALayer {
+        let layer = CALayer()
+        return layer
+    }
+
+    func createMoonHoleLayer() -> CALayer {
+        let layer = CALayer()
+        let size = mainLayer.bounds.height - 8
+        layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
+
+        let hole1 = CAShapeLayer()
+        hole1.backgroundColor = PlatformColor.Night.hole.cgColor
+        layer.addSublayer(hole1)
+
+        let hole2 = CAShapeLayer()
+        hole2.backgroundColor = PlatformColor.Night.hole.cgColor
+        layer.addSublayer(hole2)
+
+        let hole3 = CAShapeLayer()
+        hole3.backgroundColor = PlatformColor.Night.hole.cgColor
+        layer.addSublayer(hole3)
+
+#if os(macOS)
+        hole1.frame = CGRect(x: 13, y: size - 11 - 12, width: 12, height: 12)
+        hole2.frame = CGRect(x: 35, y: size - 18 - 16, width: 16, height: 16)
+        hole3.frame = CGRect(x: 22, y: size - 34 - 8, width: 8, height: 8)
+#endif
+#if os(iOS)
+        hole1.frame = CGRect(x: 13, y: 11, width: 12, height: 12)
+        hole2.frame = CGRect(x: 35, y: 18, width: 16, height: 16)
+        hole3.frame = CGRect(x: 22, y: 34, width: 8, height: 8)
+#endif
+        hole1.cornerRadius = hole1.frame.width / 2
+        hole2.cornerRadius = hole2.frame.width / 2
+        hole3.cornerRadius = hole3.frame.width / 2
+        
         return layer
     }
 }
@@ -215,4 +287,8 @@ func backgroundAnimation(toValue value: PlatformColor, duration: CFTimeInterval 
 
 func frameAnimation(toValue value: CGRect, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
     animation(keyPath: "frame", toValue: value, duration: duration, timingFunction: timingFunction)
+}
+
+func opacityAnimation(toValue value: Float, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
+    animation(keyPath: "opacity", toValue: value, duration: duration, timingFunction: timingFunction)
 }
