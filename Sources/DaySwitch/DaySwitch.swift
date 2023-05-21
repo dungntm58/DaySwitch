@@ -64,7 +64,7 @@ extension CGRect {
 open class DaySwitch: PlatformControl {
     var boundsObservation: NSKeyValueObservation?
 
-    private lazy var mainLayer = CALayer()
+    private lazy var mainLayer = CAShapeLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
     private lazy var cloudLayer = createCloudLayer()
@@ -137,6 +137,14 @@ private extension DaySwitch {
 #endif
         layoutLayer(needsAnimate: false)
         layer.addSublayer(mainLayer)
+        mainLayer.masksToBounds = true
+        mainLayer.shouldRasterize = true
+        mainLayer.fillRule = .evenOdd
+        mainLayer.shadowRadius = 2
+        mainLayer.shadowColor = PlatformColor.black.cgColor
+        mainLayer.shadowOpacity = 1
+        mainLayer.fillColor = PlatformColor.clear.cgColor
+
         mainLayer.addSublayer(indicatorLayer)
         mainLayer.addSublayer(moonHoleLayer)
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
@@ -153,7 +161,8 @@ private extension DaySwitch {
         let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
         mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
         mainLayer.backgroundColor = mainBackgroundColor.cgColor
-        mainLayer.cornerRadius = Constant.height / 2
+        mainLayer.cornerRadius = mainLayer.frame.height * 0.5
+        mainLayer.path = createInnerShadowPath()
         guard needsAnimate else {
             return
         }
@@ -214,6 +223,22 @@ private extension DaySwitch {
         default:
             break
         }
+    }
+
+    func createInnerShadowPath() -> CGPath {
+        let layer = mainLayer
+        let largerRect = CGRect(
+            x: layer.bounds.origin.x + layer.shadowRadius,
+            y: layer.bounds.origin.y + layer.shadowRadius,
+            width: layer.bounds.width - 2 * layer.shadowRadius,
+            height: layer.bounds.height - 2 * layer.shadowRadius
+        )
+        let path = CGMutablePath()
+        path.addRect(largerRect)
+        if layer.cornerRadius > 0 {
+            path.addPath(CGPath(roundedRect: layer.bounds, cornerWidth: 0, cornerHeight: layer.cornerRadius, transform: nil))
+        }
+        return path
     }
 
     func createIndicatorLayer() -> CALayer {
