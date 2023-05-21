@@ -17,12 +17,14 @@ public typealias PlatformView = NSView
 public typealias PlatformControl = NSControl
 public typealias PlatformGestureRecognizer = NSGestureRecognizer
 public typealias PlatformColor = NSColor
+public typealias PlatformBezierPath = NSBezierPath
 #endif
 #if os(iOS)
 public typealias PlatformView = UIView
 public typealias PlatformControl = UIControl
 public typealias PlatformGestureRecognizer = UIGestureRecognizer
 public typealias PlatformColor = UIColor
+public typealias PlatformBezierPath = UIBezierPath
 #endif
 
 extension PlatformColor {
@@ -57,7 +59,7 @@ enum Constant {
 
 extension CGRect {
     func centerRect(width: CGFloat, height: CGFloat) -> CGRect {
-        CGRect(x: (self.width - width) / 2 + origin.x, y: (self.height - height) / 2 + origin.y, width: width, height: height)
+        CGRect(x: (self.width - width) * 0.5 + origin.x, y: (self.height - height) * 0.5 + origin.y, width: width, height: height)
     }
 }
 
@@ -68,6 +70,13 @@ open class DaySwitch: PlatformControl {
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
     private lazy var cloudLayer = createCloudLayer()
+    private lazy var starLayers = [
+        CGRect(x: 21, y: 8, width: 3, height: 4),
+        CGRect(x: 52, y: 12, width: 6, height: 8),
+        CGRect(x: 92, y: 17, width: 6, height: 6),
+        CGRect(x: 28, y: 32, width: 5, height: 5),
+        CGRect(x: 60, y: 34, width: 3, height: 4)
+    ].map(createStarLayer)
 
     @objc
     open var isDayLight: Bool = true {
@@ -136,10 +145,16 @@ private extension DaySwitch {
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
 #endif
         layoutLayer(needsAnimate: false)
+#if os(macOS)
+        starLayers.forEach {
+            $0.frame.origin.y = mainLayer.bounds.height - $0.frame.origin.y - $0.frame.height
+        }
+#endif
         layer.addSublayer(mainLayer)
         mainLayer.addSublayer(indicatorLayer)
         mainLayer.addSublayer(moonHoleLayer)
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
+        starLayers.forEach(mainLayer.addSublayer(_:))
     }
 
     func layoutLayer(needsAnimate: Bool) {
@@ -147,13 +162,14 @@ private extension DaySwitch {
         updateIndicator(needsAnimate: needsAnimate)
         updateCloud(needsAnimate: needsAnimate)
         updateMoonHole(needsAnimate: needsAnimate)
+        updateStars(needsAnimate: needsAnimate)
     }
 
     func updateMainLayer(needsAnimate: Bool) {
         let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
         mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
         mainLayer.backgroundColor = mainBackgroundColor.cgColor
-        mainLayer.cornerRadius = Constant.height / 2
+        mainLayer.cornerRadius = Constant.height * 0.5
         guard needsAnimate else {
             return
         }
@@ -206,6 +222,18 @@ private extension DaySwitch {
         indicatorLayer.add(frameAnimation(toValue: frame), forKey: "frameAnim")
     }
 
+    func updateStars(needsAnimate: Bool) {
+        let opacity: Float = isDayLight ? 0 : 1
+        starLayers.forEach { $0.opacity = opacity }
+        guard needsAnimate else {
+            return
+        }
+        let opacityAnim = opacityAnimation(toValue: opacity)
+        starLayers.forEach {
+            $0.add(opacityAnim, forKey: "opacityAnim")
+        }
+    }
+
     @objc
     func toggleValue(_ gesture: PlatformGestureRecognizer) {
         switch gesture.state {
@@ -220,7 +248,7 @@ private extension DaySwitch {
         let layer = CALayer()
         let size = mainLayer.bounds.height - 8
         layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
-        layer.cornerRadius = size / 2
+        layer.cornerRadius = size * 0.5
         layer.shadowRadius = 2
         return layer
     }
@@ -249,18 +277,33 @@ private extension DaySwitch {
 
 #if os(macOS)
         hole1.frame = CGRect(x: 13, y: size - 11 - 12, width: 12, height: 12)
-        hole2.frame = CGRect(x: 35, y: size - 18 - 16, width: 16, height: 16)
+        hole2.frame = CGRect(x: 35, y: size - 18 - 13, width: 13, height: 13)
         hole3.frame = CGRect(x: 22, y: size - 34 - 8, width: 8, height: 8)
 #endif
 #if os(iOS)
         hole1.frame = CGRect(x: 13, y: 11, width: 12, height: 12)
-        hole2.frame = CGRect(x: 35, y: 18, width: 16, height: 16)
+        hole2.frame = CGRect(x: 35, y: 18, width: 13, height: 13)
         hole3.frame = CGRect(x: 22, y: 34, width: 8, height: 8)
 #endif
-        hole1.cornerRadius = hole1.frame.width / 2
-        hole2.cornerRadius = hole2.frame.width / 2
-        hole3.cornerRadius = hole3.frame.width / 2
-        
+        hole1.cornerRadius = hole1.frame.width * 0.5
+        hole2.cornerRadius = hole2.frame.width * 0.5
+        hole3.cornerRadius = hole3.frame.width * 0.5
+
+        return layer
+    }
+
+    func createStarLayer(frame: CGRect) -> CALayer {
+        let layer = CAShapeLayer()
+        layer.fillColor = PlatformColor.Night.star.cgColor
+        layer.frame = frame
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: frame.width * 0.5, y: 0))
+        let controlPoint = CGPoint(x: frame.width * 0.5, y: frame.height * 0.5)
+        path.addCurve(to: CGPoint(x: 0, y: frame.height * 0.5), control1: controlPoint, control2: controlPoint)
+        path.addCurve(to: CGPoint(x: frame.width * 0.5, y: frame.height), control1: controlPoint, control2: controlPoint)
+        path.addCurve(to: CGPoint(x: frame.width, y: frame.height * 0.5), control1: controlPoint, control2: controlPoint)
+        path.addCurve(to: CGPoint(x: frame.width * 0.5, y: 0), control1: controlPoint, control2: controlPoint)
+        layer.path = path
         return layer
     }
 }
@@ -291,4 +334,16 @@ func frameAnimation(toValue value: CGRect, duration: CFTimeInterval = Constant.d
 
 func opacityAnimation(toValue value: Float, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
     animation(keyPath: "opacity", toValue: value, duration: duration, timingFunction: timingFunction)
+}
+
+extension CGRect {
+    func multiply(by value: CGFloat) -> CGRect {
+        .init(x: origin.x * value, y: origin.y * value, width: width * value, height: height * value)
+    }
+}
+
+extension CGSize {
+    func multiply(by value: CGFloat) -> CGSize {
+        .init(width: width * value, height: height * value)
+    }
 }
