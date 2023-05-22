@@ -74,9 +74,14 @@ open class DaySwitch: PlatformControl {
         CGRect(x: 21, y: 8, width: 3, height: 4),
         CGRect(x: 52, y: 12, width: 6, height: 8),
         CGRect(x: 92, y: 17, width: 6, height: 6),
-        CGRect(x: 28, y: 32, width: 5, height: 5),
-        CGRect(x: 60, y: 34, width: 3, height: 4)
+        CGRect(x: 28, y: 10, width: 30, height: 30)
     ].map(createStarLayer)
+    
+    private lazy var starLayers2 = [
+        CGRect(x: 60, y: 10, width: 30, height: 30)
+    ].map {
+        createStarLayer(frame: $0, curve: 3)
+    }
 
     @objc
     open var isDayLight: Bool = true {
@@ -146,8 +151,8 @@ private extension DaySwitch {
 #endif
         layoutLayer(needsAnimate: false)
 #if os(macOS)
-        starLayers.forEach {
-            $0.frame.origin.y = mainLayer.bounds.height - $0.frame.origin.y - $0.frame.height
+        [starLayers, starLayers2].forEach {
+            $0.forEach{$0.frame.origin.y = mainLayer.bounds.height - $0.frame.origin.y - $0.frame.height}
         }
 #endif
         layer.addSublayer(mainLayer)
@@ -155,6 +160,7 @@ private extension DaySwitch {
         mainLayer.addSublayer(moonHoleLayer)
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
         starLayers.forEach(mainLayer.addSublayer(_:))
+        starLayers2.forEach(mainLayer.addSublayer(_:))
     }
 
     func layoutLayer(needsAnimate: Bool) {
@@ -224,13 +230,13 @@ private extension DaySwitch {
 
     func updateStars(needsAnimate: Bool) {
         let opacity: Float = isDayLight ? 0 : 1
-        starLayers.forEach { $0.opacity = opacity }
+        [starLayers, starLayers2].forEach { $0.forEach{$0.opacity = opacity }}
         guard needsAnimate else {
             return
         }
         let opacityAnim = opacityAnimation(toValue: opacity)
-        starLayers.forEach {
-            $0.add(opacityAnim, forKey: "opacityAnim")
+        [starLayers, starLayers2].forEach {
+            $0.forEach{$0.add(opacityAnim, forKey: "opacityAnim")}
         }
     }
 
@@ -303,6 +309,56 @@ private extension DaySwitch {
         path.addCurve(to: CGPoint(x: frame.width * 0.5, y: frame.height), control1: controlPoint, control2: controlPoint)
         path.addCurve(to: CGPoint(x: frame.width, y: frame.height * 0.5), control1: controlPoint, control2: controlPoint)
         path.addCurve(to: CGPoint(x: frame.width * 0.5, y: 0), control1: controlPoint, control2: controlPoint)
+        layer.path = path
+        return layer
+    }
+    
+    func createStarLayer(frame: CGRect, curve a: CGFloat) -> CALayer {
+        let layer = CAShapeLayer()
+        layer.fillColor = PlatformColor.Night.star.cgColor
+        layer.frame = frame
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: frame.width * 0.5, y: 0))
+        
+        // y down, x down
+        let controlPoint1 = CGPoint(x: frame.width * 0.5 , y: frame.height * 0.5 - a)
+        let controlPoint2 = CGPoint(x: frame.width * 0.5 - a, y: frame.height * 0.5)
+        // control1 affect to endPoint
+        // control2 affect to startPoint
+        path.addCurve(to: CGPoint(x: 0, y: frame.height * 0.5), control1: controlPoint1, control2: controlPoint2)
+        
+        // x down, y up
+        let controlPoint3 = CGPoint(x: frame.width * 0.5 - a, y: frame.height * 0.5)
+        let controlPoint4 = CGPoint(x: frame.width * 0.5, y: frame.height * 0.5 + a)
+        path.addCurve(to: CGPoint(x: frame.width * 0.5, y: frame.height), control1: controlPoint3, control2: controlPoint4)
+        
+        // y up, x up
+        let controlPoint5 = CGPoint(x: frame.width * 0.5, y: frame.height * 0.5 + a)
+        let controlPoint6 = CGPoint(x: frame.width * 0.5 + a, y: frame.height * 0.5)
+        path.addCurve(to: CGPoint(x: frame.width, y: frame.height * 0.5), control1: controlPoint5, control2: controlPoint6)
+        
+        // x up, y down
+        let controlPoint7 = CGPoint(x: frame.width * 0.5 + a, y: frame.height * 0.5)
+        let controlPoint8 = CGPoint(x: frame.width * 0.5, y: frame.height * 0.5 - a)
+        path.addCurve(to: CGPoint(x: frame.width * 0.5, y: 0), control1: controlPoint7, control2: controlPoint8)
+        
+        layer.path = path
+        return layer
+    }
+    
+    func createStarLayerWithOneControl(frame: CGRect) -> CALayer {
+        let layer = CAShapeLayer()
+        layer.fillColor = PlatformColor.Night.star.cgColor
+        layer.frame = frame
+        
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: frame.width * 0.5, y: 0))
+        let controlPoint = CGPoint(x: frame.width * 0.5, y: frame.height * 0.5)
+        path.addQuadCurve(to: CGPoint(x: 0, y: frame.height * 0.5), control: controlPoint)
+        path.addQuadCurve(to: CGPoint(x: frame.width * 0.5, y: frame.height), control: controlPoint)
+        path.addQuadCurve(to: CGPoint(x: frame.width, y: frame.height * 0.5), control: controlPoint)
+        path.addQuadCurve(to: CGPoint(x: frame.width * 0.5, y: 0), control: controlPoint)
+        
         layer.path = path
         return layer
     }
