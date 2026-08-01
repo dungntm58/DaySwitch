@@ -26,12 +26,17 @@ public typealias PlatformColor = UIColor
 private extension PlatformColor {
     enum Day {
         static let sun = #colorLiteral(red: 1, green: 0.8298229575, blue: 0.2543709278, alpha: 1)
+        static let sunRim = #colorLiteral(red: 0.9254901961, green: 0.7450980392, blue: 0.2117647059, alpha: 1)
         static let sunShadow = #colorLiteral(red: 0.2823529412, green: 0.2431372549, blue: 0.1176470588, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.5411764706, green: 0.8980392157, blue: 1, alpha: 1)
+        static let cloud = PlatformColor.white
+        /// "Dark Cloud" in the design: the layer that trails the white one.
+        static let cloudShade = #colorLiteral(red: 0.9450980392, green: 0.9450980392, blue: 0.9450980392, alpha: 1)
     }
 
     enum Night {
         static let moon = #colorLiteral(red: 0.8549019608, green: 0.8509803922, blue: 0.8431372549, alpha: 1)
+        static let moonRim = #colorLiteral(red: 0.5803921569, green: 0.5647058824, blue: 0.5529411765, alpha: 1)
         static let moonShadow = PlatformColor.black
         static let hole = #colorLiteral(red: 0.7647058824, green: 0.7607843137, blue: 0.7450980392, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.09803921569, green: 0.09411764706, blue: 0.1450980392, alpha: 1)
@@ -49,21 +54,72 @@ enum Constant {
     static let duration: CFTimeInterval = 0.35
     static let timingFunction = CAMediaTimingFunction(name: .easeIn)
 
+    /// A circle anchored by the top-left corner of its bounding box.
+    typealias Circle = (x: CGFloat, y: CGFloat, diameter: CGFloat)
+
     /// Moon craters, in top-left coordinates relative to the indicator.
-    static let moonHoles: [(x: CGFloat, y: CGFloat, diameter: CGFloat)] = [
+    static let moonHoles: [Circle] = [
         (13, 11, 12),
         (35, 18, 16),
         (22, 34, 8),
     ]
 
-    /// AppKit lays out layers from the bottom-left, UIKit from the top-left. The
-    /// two declarations below are that same flip, kept here so no drawing code
-    /// has to restate it.
+    /// The two cloud layers, in top-left coordinates relative to the track. Each
+    /// cloud is the union of its puffs; the shade is the same shape grown a couple
+    /// of points, so it reads as a lip along the top-left of the white one. Both
+    /// run off the track and get clipped back to it.
+    ///
+    /// The design places the track at (8, 17) on its canvas and draws at the same
+    /// scale, so these are the design's numbers less that origin.
+    static let cloud: [Circle] = [
+        (55, 48, 18),
+        (66, 42, 23),
+        (81, 21, 64),
+        (139, 35, 25),
+    ]
+
+    static let cloudShade: [Circle] = [
+        (52, 44, 22),
+        (64, 38, 26),
+        (79, 17, 68),
+        (137, 31, 29),
+    ]
+
+    /// A bird glyph anchored by the top-left corner of its box. `width` scales the
+    /// glyph, which is otherwise fixed.
+    typealias Bird = (x: CGFloat, y: CGFloat, width: CGFloat)
+
+    /// Birds, in the same top-left track coordinates as the clouds.
+    static let birds: [Bird] = [
+        (130, 13, 8),
+        (144, 15, 8),
+        (137, 20, 6),
+    ]
+
+    /// The glyph is authored this wide and scaled from there; `birdDepth` is how
+    /// far the band drops below the curve that shapes it.
+    static let birdWidth: CGFloat = 8
+    static let birdDepth: CGFloat = 1
+
+    /// How far the lit face sits from the rim behind it: `width` points away from
+    /// the shadow, `height` points up. What the face leaves uncovered is the rim,
+    /// a thin crescent hugging the shaded edge. Downward-positive, like `shadowDrop`.
+    static let faceOffset = CGSize(width: 1, height: -2)
+
+    // AppKit lays out layers from the bottom-left, UIKit from the top-left. The
+    // declarations below are that same flip, kept here so no drawing code has to
+    // restate it.
+
+    /// Converts a downward-positive offset into the platform's layer coordinate space.
+    static func vertical(_ downward: CGFloat) -> CGFloat {
 #if os(macOS)
-    static let shadowDrop: CGFloat = -2
+        -downward
 #else
-    static let shadowDrop: CGFloat = 2
+        downward
 #endif
+    }
+
+    static let shadowDrop = vertical(2)
 
     /// Converts a top-anchored `y` into the platform's layer coordinate space.
     static func y(fromTop top: CGFloat, height: CGFloat, in container: CGFloat) -> CGFloat {
@@ -71,6 +127,15 @@ enum Constant {
         container - top - height
 #else
         top
+#endif
+    }
+
+    /// The same flip for paths, which cannot be repositioned a rect at a time.
+    static func topLeftTransform(in container: CGFloat) -> CGAffineTransform {
+#if os(macOS)
+        CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: container)
+#else
+        .identity
 #endif
     }
 }
@@ -95,9 +160,11 @@ private extension CALayer {
 
 open class DaySwitch: PlatformControl {
     private lazy var mainLayer = createMainLayer()
+    private lazy var sceneryLayer = createSceneryLayer()
     private lazy var innerShadowLayer = createInnerShadowLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
+    private lazy var rimLayer = createRimLayer()
 
     @objc
     open var isDayLight: Bool = true {
@@ -165,11 +232,14 @@ private extension DaySwitch {
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
 #endif
         layer.addSublayer(mainLayer)
+        // Scenery, so it goes under the track's own shading and under the indicator.
+        mainLayer.addSublayer(sceneryLayer)
         mainLayer.addSublayer(innerShadowLayer)
         mainLayer.addSublayer(indicatorLayer)
-        // The holes are a child of the indicator, so they ride it for free — both
-        // at rest and through the slide animation.
+        // The holes and the rim are children of the indicator, so they ride it for
+        // free — both at rest and through the slide animation.
         indicatorLayer.addSublayer(moonHoleLayer)
+        indicatorLayer.addSublayer(rimLayer)
 
         layoutMainLayer()
         applyState(needsAnimate: false)
@@ -186,6 +256,8 @@ private extension DaySwitch {
         updateMainLayer(needsAnimate: needsAnimate)
         updateIndicator(needsAnimate: needsAnimate)
         updateMoonHole(needsAnimate: needsAnimate)
+        updateRim(needsAnimate: needsAnimate)
+        updateScenery(needsAnimate: needsAnimate)
     }
 
     func updateMainLayer(needsAnimate: Bool) {
@@ -230,6 +302,43 @@ private extension DaySwitch {
         moonHoleLayer.animate("opacity", to: opacity)
     }
 
+    func updateScenery(needsAnimate: Bool) {
+        let opacity: Float = isDayLight ? 1 : 0
+        sceneryLayer.opacity = opacity
+        guard needsAnimate else {
+            return
+        }
+        sceneryLayer.animate("opacity", to: opacity)
+    }
+
+    func updateRim(needsAnimate: Bool) {
+        let fillColor = isDayLight ? PlatformColor.Day.sunRim : PlatformColor.Night.moonRim
+        let path = rimPath()
+
+        rimLayer.fillColor = fillColor.cgColor
+        rimLayer.path = path
+
+        guard needsAnimate else {
+            return
+        }
+        rimLayer.animate("fillColor", to: fillColor.cgColor)
+        rimLayer.animate("path", to: path)
+    }
+
+    /// The indicator circle with the lit face punched out of it. The face sits on
+    /// the side the light comes from, so the crescent left over is the far edge.
+    func rimPath() -> CGPath {
+        let size = Constant.indicatorSize
+        let circle = CGRect(x: 0, y: 0, width: size, height: size)
+        let face = circle.offsetBy(dx: isDayLight ? -Constant.faceOffset.width : Constant.faceOffset.width,
+                                   dy: Constant.vertical(Constant.faceOffset.height))
+
+        let path = CGMutablePath()
+        path.addEllipse(in: circle)
+        path.addEllipse(in: face)
+        return path
+    }
+
     /// Layers created in code default to `contentsScale` 1, so a `CAShapeLayer` rasterises
     /// its path at 1x and gets scaled up on a retina display. Against `mainLayer`, whose
     /// `cornerRadius` the compositor draws at device resolution, that mismatch shows up as
@@ -239,8 +348,10 @@ private extension DaySwitch {
         guard innerShadowLayer.contentsScale != scale else {
             return
         }
-        innerShadowLayer.contentsScale = scale
-        innerShadowLayer.mask?.contentsScale = scale
+        for layer in [innerShadowLayer, rimLayer, sceneryLayer] + (sceneryLayer.sublayers ?? []) {
+            layer.contentsScale = scale
+            layer.mask?.contentsScale = scale
+        }
     }
 
     var platformScale: CGFloat {
@@ -299,6 +410,77 @@ private extension DaySwitch {
         return layer
     }
 
+    func createSceneryLayer() -> CALayer {
+        let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        let radius = Constant.cornerRadius
+
+        let mask = CAShapeLayer()
+        mask.frame = rect
+        mask.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+
+        let layer = CALayer()
+        layer.frame = rect
+        layer.mask = mask
+        layer.addSublayer(createPuffLayer(Constant.cloudShade, color: PlatformColor.Day.cloudShade))
+        layer.addSublayer(createPuffLayer(Constant.cloud, color: PlatformColor.Day.cloud))
+        for bird in Constant.birds {
+            layer.addSublayer(createBirdLayer(bird))
+        }
+        return layer
+    }
+
+    func createBirdLayer(_ bird: Constant.Bird) -> CAShapeLayer {
+        let scale = bird.width / Constant.birdWidth
+        let placement = CGAffineTransform(translationX: bird.x, y: bird.y)
+            .scaledBy(x: scale, y: scale)
+            .concatenating(Constant.topLeftTransform(in: Constant.height))
+
+        // Wings dip, rise and dip again across the box: the tips hang at `tip`,
+        // the two meet in the middle at `join`, and `lift` pulls each one up in
+        // between. The band is that curve traced out and then back a point lower,
+        // rather than stroked, which is what keeps its depth even out to the tips.
+        let (tip, join, lift): (CGFloat, CGFloat, CGFloat) = (1.7, 0.55, -1.15)
+        let width = Constant.birdWidth
+        let depth = Constant.birdDepth
+
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 0, y: tip), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width / 2, y: join),
+                          control: CGPoint(x: width / 4, y: lift), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width, y: tip),
+                          control: CGPoint(x: width * 3 / 4, y: lift), transform: placement)
+        path.addLine(to: CGPoint(x: width, y: tip + depth), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width / 2, y: join + depth),
+                          control: CGPoint(x: width * 3 / 4, y: lift + depth), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: 0, y: tip + depth),
+                          control: CGPoint(x: width / 4, y: lift + depth), transform: placement)
+        path.closeSubpath()
+
+        let layer = CAShapeLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        layer.path = path
+        layer.fillColor = PlatformColor.Day.cloud.cgColor
+        return layer
+    }
+
+    /// Overlapping puffs fill as one silhouette under the non-zero rule, which is
+    /// what keeps the seams between them from showing.
+    func createPuffLayer(_ puffs: [Constant.Circle], color: PlatformColor) -> CAShapeLayer {
+        let path = CGMutablePath()
+        for puff in puffs {
+            path.addEllipse(in: CGRect(x: puff.x,
+                                       y: Constant.y(fromTop: puff.y, height: puff.diameter, in: Constant.height),
+                                       width: puff.diameter,
+                                       height: puff.diameter))
+        }
+
+        let layer = CAShapeLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        layer.path = path
+        layer.fillColor = color.cgColor
+        return layer
+    }
+
     func createIndicatorLayer() -> CALayer {
         let size = Constant.indicatorSize
         let layer = CALayer()
@@ -308,6 +490,22 @@ private extension DaySwitch {
         // The silhouette is a known circle, so hand it over rather than making
         // Core Animation blur the layer's alpha channel offscreen every frame.
         layer.shadowPath = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: size, height: size), transform: nil)
+        return layer
+    }
+
+    func createRimLayer() -> CAShapeLayer {
+        let rect = CGRect(x: 0, y: 0, width: Constant.indicatorSize, height: Constant.indicatorSize)
+
+        // Even-odd over the two circles also fills the sliver of the face that
+        // overhangs the indicator; the mask trims that back off.
+        let mask = CAShapeLayer()
+        mask.frame = rect
+        mask.path = CGPath(ellipseIn: rect, transform: nil)
+
+        let layer = CAShapeLayer()
+        layer.frame = rect
+        layer.fillRule = .evenOdd
+        layer.mask = mask
         return layer
     }
 
