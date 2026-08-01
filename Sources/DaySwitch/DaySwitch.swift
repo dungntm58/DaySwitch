@@ -7,84 +7,112 @@
 
 #if os(macOS)
 import AppKit
-#endif
-#if os(iOS)
-import UIKit
-#endif
 
-#if os(macOS)
 public typealias PlatformView = NSView
 public typealias PlatformControl = NSControl
 public typealias PlatformGestureRecognizer = NSGestureRecognizer
 public typealias PlatformColor = NSColor
-#endif
-#if os(iOS)
+#elseif os(iOS)
+import UIKit
+
 public typealias PlatformView = UIView
 public typealias PlatformControl = UIControl
 public typealias PlatformGestureRecognizer = UIGestureRecognizer
 public typealias PlatformColor = UIColor
+#else
+#error("DaySwitch supports macOS and iOS only")
 #endif
 
-extension PlatformColor {
+private extension PlatformColor {
     enum Day {
         static let sun = #colorLiteral(red: 1, green: 0.8298229575, blue: 0.2543709278, alpha: 1)
-        static let darkSun = #colorLiteral(red: 0.9254901961, green: 0.7450980392, blue: 0.2117647059, alpha: 1)
         static let sunShadow = #colorLiteral(red: 0.2823529412, green: 0.2431372549, blue: 0.1176470588, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.5411764706, green: 0.8980392157, blue: 1, alpha: 1)
-        static let cloud = PlatformColor.white
-        static let darkCloud = #colorLiteral(red: 0.9450980392, green: 0.9450980392, blue: 0.9450980392, alpha: 1)
     }
 
     enum Night {
         static let moon = #colorLiteral(red: 0.8549019608, green: 0.8509803922, blue: 0.8431372549, alpha: 1)
-        static let darkMoon = #colorLiteral(red: 0.5803921569, green: 0.5647058824, blue: 0.5529411765, alpha: 1)
         static let moonShadow = PlatformColor.black
         static let hole = #colorLiteral(red: 0.7647058824, green: 0.7607843137, blue: 0.7450980392, alpha: 1)
-        static let holeShadow = #colorLiteral(red: 0.337254902, green: 0.337254902, blue: 0.337254902, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.09803921569, green: 0.09411764706, blue: 0.1450980392, alpha: 1)
-        static let star = PlatformColor.white
-        static let mountain = #colorLiteral(red: 0.7254901961, green: 0.7647058824, blue: 0.8039215686, alpha: 1)
-        static let darkMountain = #colorLiteral(red: 0.3490196078, green: 0.3764705882, blue: 0.4039215686, alpha: 1)
     }
 }
 
 enum Constant {
     static let width: CGFloat = 160
     static let height: CGFloat = 60
+    static let cornerRadius = height / 2
+    /// Gap between the track edge and the indicator.
+    static let inset: CGFloat = 4
+    static let indicatorSize = height - inset * 2
+    static let shadowRadius: CGFloat = 2
     static let duration: CFTimeInterval = 0.35
     static let timingFunction = CAMediaTimingFunction(name: .easeIn)
+
+    /// Moon craters, in top-left coordinates relative to the indicator.
+    static let moonHoles: [(x: CGFloat, y: CGFloat, diameter: CGFloat)] = [
+        (13, 11, 12),
+        (35, 18, 16),
+        (22, 34, 8),
+    ]
+
+    /// AppKit lays out layers from the bottom-left, UIKit from the top-left. The
+    /// two declarations below are that same flip, kept here so no drawing code
+    /// has to restate it.
+#if os(macOS)
+    static let shadowDrop: CGFloat = -2
+#else
+    static let shadowDrop: CGFloat = 2
+#endif
+
+    /// Converts a top-anchored `y` into the platform's layer coordinate space.
+    static func y(fromTop top: CGFloat, height: CGFloat, in container: CGFloat) -> CGFloat {
+#if os(macOS)
+        container - top - height
+#else
+        top
+#endif
+    }
 }
 
-extension CGRect {
+private extension CGRect {
     func centerRect(width: CGFloat, height: CGFloat) -> CGRect {
-        CGRect(x: (self.width - width) / 2 + origin.x, y: (self.height - height) / 2 + origin.y, width: width, height: height)
+        insetBy(dx: (self.width - width) / 2, dy: (self.height - height) / 2)
+    }
+}
+
+private extension CALayer {
+    /// Keys the animation on `<keyPath>Anim`, so the key and the property it
+    /// animates cannot drift apart.
+    func animate(_ keyPath: String, to value: Any?) {
+        let animation = CABasicAnimation(keyPath: keyPath)
+        animation.duration = Constant.duration
+        animation.toValue = value
+        animation.timingFunction = Constant.timingFunction
+        add(animation, forKey: keyPath + "Anim")
     }
 }
 
 open class DaySwitch: PlatformControl {
-    var boundsObservation: NSKeyValueObservation?
-
-    private lazy var mainLayer = CALayer()
+    private lazy var mainLayer = createMainLayer()
     private lazy var innerShadowLayer = createInnerShadowLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
-    private lazy var cloudLayer = createCloudLayer()
 
     @objc
     open var isDayLight: Bool = true {
         didSet {
-            if isDayLight == oldValue {
+            guard isDayLight != oldValue else {
                 return
             }
 #if os(macOS)
-        if let action {
-            NSApp.sendAction(action, to: target, from: self)
-        }
+            if let action {
+                NSApp.sendAction(action, to: target, from: self)
+            }
+#else
+            sendActions(for: .valueChanged)
 #endif
-#if os(iOS)
-        sendActions(for: .valueChanged)
-#endif
-            layoutLayer(needsAnimate: true)
+            applyState(needsAnimate: true)
         }
     }
 
@@ -103,23 +131,21 @@ open class DaySwitch: PlatformControl {
     }
 
 #if os(macOS)
-    open override func viewDidMoveToSuperview() {
-        platformDidMoveToSuperview()
+    open override func layout() {
+        super.layout()
+        layoutMainLayer()
     }
-#endif
-#if os(iOS)
-    open override func didMoveToSuperview() {
-        platformDidMoveToSuperview()
-    }
-#endif
 
-#if os(macOS)
     open override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateContentsScale()
     }
-#endif
-#if os(iOS)
+#else
+    open override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutMainLayer()
+    }
+
     open override func didMoveToWindow() {
         super.didMoveToWindow()
         updateContentsScale()
@@ -128,16 +154,6 @@ open class DaySwitch: PlatformControl {
 }
 
 private extension DaySwitch {
-    func platformDidMoveToSuperview() {
-        if superview == nil {
-            boundsObservation?.invalidate()
-            return
-        }
-        boundsObservation = observe(\.bounds) { `self`, _ in
-            self.layoutLayer(needsAnimate: false)
-        }
-    }
-
     func commonInit() {
 #if os(macOS)
         wantsLayer = true
@@ -145,61 +161,73 @@ private extension DaySwitch {
         guard let layer else {
             return
         }
-#endif
-#if os(iOS)
+#else
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleValue(_:))))
 #endif
-        layoutLayer(needsAnimate: false)
         layer.addSublayer(mainLayer)
         mainLayer.addSublayer(innerShadowLayer)
         mainLayer.addSublayer(indicatorLayer)
-        mainLayer.addSublayer(moonHoleLayer)
-        indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
+        // The holes are a child of the indicator, so they ride it for free — both
+        // at rest and through the slide animation.
+        indicatorLayer.addSublayer(moonHoleLayer)
+
+        layoutMainLayer()
+        applyState(needsAnimate: false)
+        updateContentsScale()
     }
 
-    func layoutLayer(needsAnimate: Bool) {
+    /// `mainLayer` is the only layer whose geometry depends on `bounds`; every
+    /// other layer is sized from `Constant` and positioned within it.
+    func layoutMainLayer() {
+        mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
+    }
+
+    func applyState(needsAnimate: Bool) {
         updateMainLayer(needsAnimate: needsAnimate)
-        updateInnerShadow()
         updateIndicator(needsAnimate: needsAnimate)
-        updateCloud(needsAnimate: needsAnimate)
         updateMoonHole(needsAnimate: needsAnimate)
     }
 
     func updateMainLayer(needsAnimate: Bool) {
-        let mainBackgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
-        mainLayer.frame = bounds.centerRect(width: Constant.width, height: Constant.height)
-        mainLayer.backgroundColor = mainBackgroundColor.cgColor
-        mainLayer.cornerRadius = Constant.height / 2
+        let backgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
+        mainLayer.backgroundColor = backgroundColor.cgColor
         guard needsAnimate else {
             return
         }
-        mainLayer.add(backgroundAnimation(toValue: mainBackgroundColor), forKey: "backgroundColorAnim")
+        mainLayer.animate("backgroundColor", to: backgroundColor.cgColor)
     }
 
-    func updateInnerShadow() {
-        let rect = mainLayer.bounds
-        let radius = Constant.height / 2
-        let capsulePath = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+    func updateIndicator(needsAnimate: Bool) {
+        let backgroundColor = isDayLight ? PlatformColor.Day.sun : PlatformColor.Night.moon
+        let shadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
+        let shadowOpacity: Float = isDayLight ? 0.25 : 0.2
+        let shadowOffset = CGSize(width: isDayLight ? 2 : -2, height: Constant.shadowDrop)
+        var frame = indicatorLayer.frame
+        frame.origin.x = isDayLight ? Constant.inset : Constant.width - Constant.inset - frame.width
 
-        // Even-odd fill of "everything outside the capsule" casts its shadow inwards,
-        // the mask then keeps only the part that falls inside the capsule.
-        //
-        // The hole is nudged one point out so the opaque fill stops short of the
-        // mask's antialiased rim. Where the two edges overlap they multiply
-        // (fill alpha * mask alpha) and leave a seam along the curves.
-        let inset: CGFloat = 1
-        let holeRect = rect.insetBy(dx: -inset, dy: -inset)
-        let path = CGMutablePath()
-        path.addRect(rect.insetBy(dx: -radius, dy: -radius))
-        path.addPath(CGPath(roundedRect: holeRect, cornerWidth: radius + inset, cornerHeight: radius + inset, transform: nil))
+        indicatorLayer.backgroundColor = backgroundColor.cgColor
+        indicatorLayer.frame = frame
+        indicatorLayer.shadowColor = shadowColor.cgColor
+        indicatorLayer.shadowOpacity = shadowOpacity
+        indicatorLayer.shadowOffset = shadowOffset
 
-        innerShadowLayer.frame = rect
-        innerShadowLayer.path = path
-        if let mask = innerShadowLayer.mask as? CAShapeLayer {
-            mask.frame = rect
-            mask.path = capsulePath
+        guard needsAnimate else {
+            return
         }
-        updateContentsScale()
+        indicatorLayer.animate("backgroundColor", to: backgroundColor.cgColor)
+        indicatorLayer.animate("frame", to: frame)
+        indicatorLayer.animate("shadowColor", to: shadowColor.cgColor)
+        indicatorLayer.animate("shadowOpacity", to: shadowOpacity)
+        indicatorLayer.animate("shadowOffset", to: shadowOffset)
+    }
+
+    func updateMoonHole(needsAnimate: Bool) {
+        let opacity: Float = isDayLight ? 0 : 1
+        moonHoleLayer.opacity = opacity
+        guard needsAnimate else {
+            return
+        }
+        moonHoleLayer.animate("opacity", to: opacity)
     }
 
     /// Layers created in code default to `contentsScale` 1, so a `CAShapeLayer` rasterises
@@ -217,155 +245,86 @@ private extension DaySwitch {
 
     var platformScale: CGFloat {
 #if os(macOS)
-        return window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-#endif
-#if os(iOS)
+        window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+#else
         let scale = traitCollection.displayScale
         return scale > 0 ? scale : 2
 #endif
     }
 
-    func updateIndicator(needsAnimate: Bool) {
-        let backgroundColor = isDayLight ? PlatformColor.Day.sun : PlatformColor.Night.moon
-        indicatorLayer.backgroundColor = backgroundColor.cgColor
-        let frame = CGRect(x: isDayLight ? 4 : mainLayer.frame.width - 4 - indicatorLayer.bounds.width, y: indicatorLayer.frame.origin.y, width: indicatorLayer.bounds.width, height: indicatorLayer.bounds.height)
-        indicatorLayer.frame = frame
-        let shadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
-        indicatorLayer.shadowColor = shadowColor.cgColor
-        let shadowOpacity: Float = isDayLight ? 0.25 : 0.2
-        indicatorLayer.shadowOpacity = shadowOpacity
-#if os(macOS)
-        let shadowOffset = isDayLight ? CGSize(width: 2, height: -2) : CGSize(width: -2, height: -2)
-#endif
-#if os(iOS)
-        let shadowOffset = isDayLight ? CGSize(width: 2, height: 2) : CGSize(width: -2, height: 2)
-#endif
-        indicatorLayer.shadowOffset = shadowOffset
-
-        guard needsAnimate else {
-            return
-        }
-        indicatorLayer.add(backgroundAnimation(toValue: backgroundColor), forKey: "backgroundColorAnim")
-        indicatorLayer.add(frameAnimation(toValue: frame), forKey: "frameAnim")
-        shadowAnimation(toShadowColor: shadowColor, shadowOpacity: shadowOpacity, shadowOffset: shadowOffset)
-            .forEach { key, value in
-                indicatorLayer.add(value, forKey: key)
-            }
-    }
-
-    func updateCloud(needsAnimate: Bool) {
-        guard needsAnimate else {
-            return
-        }
-    }
-
-    func updateMoonHole(needsAnimate: Bool) {
-        let opacity: Float = isDayLight ? 0 : 1
-        moonHoleLayer.opacity = opacity
-        let frame = CGRect(x: isDayLight ? 4 : mainLayer.frame.width - 4 - moonHoleLayer.bounds.width, y: moonHoleLayer.frame.origin.y, width: moonHoleLayer.bounds.width, height: moonHoleLayer.bounds.height)
-        moonHoleLayer.frame = frame
-        guard needsAnimate else {
-            return
-        }
-        moonHoleLayer.add(opacityAnimation(toValue: opacity), forKey: "opacityAnim")
-        indicatorLayer.add(frameAnimation(toValue: frame), forKey: "frameAnim")
-    }
-
     @objc
     func toggleValue(_ gesture: PlatformGestureRecognizer) {
-        switch gesture.state {
-        case .ended:
-            isDayLight.toggle()
-        default:
-            break
+        guard gesture.state == .ended else {
+            return
         }
+        isDayLight.toggle()
+    }
+
+    func createMainLayer() -> CALayer {
+        let layer = CALayer()
+        layer.cornerRadius = Constant.cornerRadius
+        return layer
     }
 
     func createInnerShadowLayer() -> CAShapeLayer {
+        let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        let radius = Constant.cornerRadius
+
+        // Even-odd fill of "everything outside the capsule" casts its shadow inwards,
+        // the mask then keeps only the part that falls inside the capsule.
+        //
+        // The hole is nudged one point out so the opaque fill stops short of the
+        // mask's antialiased rim. Where the two edges overlap they multiply
+        // (fill alpha * mask alpha) and leave a seam along the curves.
+        let inset: CGFloat = 1
+        let holeRect = rect.insetBy(dx: -inset, dy: -inset)
+        let path = CGMutablePath()
+        path.addRect(rect.insetBy(dx: -radius, dy: -radius))
+        path.addPath(CGPath(roundedRect: holeRect, cornerWidth: radius + inset, cornerHeight: radius + inset, transform: nil))
+
+        let mask = CAShapeLayer()
+        mask.frame = rect
+        mask.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+
         let layer = CAShapeLayer()
+        layer.frame = rect
+        layer.path = path
         layer.fillRule = .evenOdd
         layer.fillColor = PlatformColor.black.cgColor
         layer.shadowColor = PlatformColor.black.cgColor
         layer.shadowOffset = .zero
         layer.shadowOpacity = 0.2
-        layer.shadowRadius = 2
-        layer.mask = CAShapeLayer()
+        layer.shadowRadius = Constant.shadowRadius
+        layer.mask = mask
         return layer
     }
 
     func createIndicatorLayer() -> CALayer {
+        let size = Constant.indicatorSize
         let layer = CALayer()
-        let size = mainLayer.bounds.height - 8
-        layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
+        layer.frame = CGRect(x: Constant.inset, y: Constant.inset, width: size, height: size)
         layer.cornerRadius = size / 2
-        layer.shadowRadius = 2
-        return layer
-    }
-
-    func createCloudLayer() -> CALayer {
-        let layer = CALayer()
+        layer.shadowRadius = Constant.shadowRadius
+        // The silhouette is a known circle, so hand it over rather than making
+        // Core Animation blur the layer's alpha channel offscreen every frame.
+        layer.shadowPath = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: size, height: size), transform: nil)
         return layer
     }
 
     func createMoonHoleLayer() -> CALayer {
+        let size = Constant.indicatorSize
         let layer = CALayer()
-        let size = mainLayer.bounds.height - 8
-        layer.frame = CGRect(x: 4, y: 4, width: size, height: size)
-
-        let hole1 = CAShapeLayer()
-        hole1.backgroundColor = PlatformColor.Night.hole.cgColor
-        layer.addSublayer(hole1)
-
-        let hole2 = CAShapeLayer()
-        hole2.backgroundColor = PlatformColor.Night.hole.cgColor
-        layer.addSublayer(hole2)
-
-        let hole3 = CAShapeLayer()
-        hole3.backgroundColor = PlatformColor.Night.hole.cgColor
-        layer.addSublayer(hole3)
-
-#if os(macOS)
-        hole1.frame = CGRect(x: 13, y: size - 11 - 12, width: 12, height: 12)
-        hole2.frame = CGRect(x: 35, y: size - 18 - 16, width: 16, height: 16)
-        hole3.frame = CGRect(x: 22, y: size - 34 - 8, width: 8, height: 8)
-#endif
-#if os(iOS)
-        hole1.frame = CGRect(x: 13, y: 11, width: 12, height: 12)
-        hole2.frame = CGRect(x: 35, y: 18, width: 16, height: 16)
-        hole3.frame = CGRect(x: 22, y: 34, width: 8, height: 8)
-#endif
-        hole1.cornerRadius = hole1.frame.width / 2
-        hole2.cornerRadius = hole2.frame.width / 2
-        hole3.cornerRadius = hole3.frame.width / 2
-        
+        layer.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        for hole in Constant.moonHoles {
+            let holeLayer = CALayer()
+            holeLayer.backgroundColor = PlatformColor.Night.hole.cgColor
+            holeLayer.frame = CGRect(x: hole.x,
+                                     y: Constant.y(fromTop: hole.y, height: hole.diameter, in: size),
+                                     width: hole.diameter,
+                                     height: hole.diameter)
+            holeLayer.cornerRadius = hole.diameter / 2
+            layer.addSublayer(holeLayer)
+        }
         return layer
     }
-}
-
-func animation(keyPath: String, toValue value: Any?, duration: CFTimeInterval, timingFunction: CAMediaTimingFunction) -> CAAnimation {
-    let anim = CABasicAnimation(keyPath: keyPath)
-    anim.duration = duration
-    anim.toValue = value
-    anim.timingFunction = timingFunction
-    return anim
-}
-
-func shadowAnimation(toShadowColor color: PlatformColor? = nil, shadowOpacity: Float? = nil, shadowOffset: CGSize? = nil, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> [String: CAAnimation] {
-    var dict: [String: CAAnimation] = [:]
-    dict["shadowColorAnim"] = color.flatMap { animation(keyPath: "shadowColor", toValue: $0.cgColor, duration: duration, timingFunction: timingFunction) }
-    dict["shadowOpacityAnim"] = shadowOpacity.flatMap { animation(keyPath: "shadowOpacity", toValue: $0, duration: duration, timingFunction: timingFunction) }
-    dict["shadowOffsetAnim"] = shadowOffset.flatMap { animation(keyPath: "shadowOffset", toValue: $0, duration: duration, timingFunction: timingFunction) }
-    return dict
-}
-
-func backgroundAnimation(toValue value: PlatformColor, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
-    animation(keyPath: "backgroundColor", toValue: value.cgColor, duration: duration, timingFunction: timingFunction)
-}
-
-func frameAnimation(toValue value: CGRect, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
-    animation(keyPath: "frame", toValue: value, duration: duration, timingFunction: timingFunction)
-}
-
-func opacityAnimation(toValue value: Float, duration: CFTimeInterval = Constant.duration, timingFunction: CAMediaTimingFunction = Constant.timingFunction) -> CAAnimation {
-    animation(keyPath: "opacity", toValue: value, duration: duration, timingFunction: timingFunction)
 }
