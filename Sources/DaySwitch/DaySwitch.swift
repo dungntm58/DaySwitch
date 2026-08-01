@@ -40,6 +40,10 @@ private extension PlatformColor {
         static let moonShadow = PlatformColor.black
         static let hole = #colorLiteral(red: 0.7647058824, green: 0.7607843137, blue: 0.7450980392, alpha: 1)
         static let spaceBar = #colorLiteral(red: 0.09803921569, green: 0.09411764706, blue: 0.1450980392, alpha: 1)
+        static let mountain = #colorLiteral(red: 0.7254901961, green: 0.7647058824, blue: 0.8039215686, alpha: 1)
+        /// The range behind, dark enough to read as further off.
+        static let mountainFar = #colorLiteral(red: 0.3490196078, green: 0.3764705882, blue: 0.4039215686, alpha: 1)
+        static let star = #colorLiteral(red: 0.8509803922, green: 0.8509803922, blue: 0.8509803922, alpha: 1)
     }
 }
 
@@ -101,6 +105,54 @@ enum Constant {
     static let birdWidth: CGFloat = 8
     static let birdDepth: CGFloat = 1
 
+    /// The ridge line of the near range, in the same top-left track coordinates as
+    /// the clouds. Closing the shape draws a straight line from the last point back
+    /// to the first, so both ends sit below the track and the fill runs off it, the
+    /// way the clouds run off the sides.
+    static let ridge: [CGPoint] = [
+        CGPoint(x: -2.9, y: 62),
+        CGPoint(x: 16.5, y: 25),
+        CGPoint(x: 20.2, y: 44.7),
+        CGPoint(x: 23, y: 34.3),
+        CGPoint(x: 30.4, y: 55.5),
+        CGPoint(x: 37, y: 43),
+        CGPoint(x: 39.9, y: 49.8),
+        CGPoint(x: 43.6, y: 37.2),
+        CGPoint(x: 56.6, y: 53.1),
+        CGPoint(x: 61, y: 41.1),
+        CGPoint(x: 84.2, y: 62),
+    ]
+
+    /// The range behind the first one. It is mostly hidden, and shows as an edge
+    /// along the near range's slopes wherever these peaks clear them.
+    static let farRidge: [CGPoint] = [
+        CGPoint(x: 24, y: 62),
+        CGPoint(x: 37, y: 40.2),
+        CGPoint(x: 45.5, y: 49),
+        CGPoint(x: 52.6, y: 41.8),
+        CGPoint(x: 57.6, y: 52.1),
+        CGPoint(x: 68, y: 43.8),
+        CGPoint(x: 83.2, y: 62),
+    ]
+
+    /// A four-pointed star. Unlike the clouds and the birds it is anchored by its
+    /// centre, which is what the glyph is symmetric about.
+    typealias Star = (x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat)
+
+    /// Stars, in the same top-left track coordinates as the clouds.
+    static let stars: [Star] = [
+        (22.5, 10, 2.1, 3.1),
+        (34.5, 30.5, 4, 4),
+        (55, 16, 4.9, 6.5),
+        (61.5, 36, 2.1, 3.1),
+        (87, 20, 5, 5),
+    ]
+
+    /// How far the control point between two arms sits from the centre, as a
+    /// fraction of the arm: 0 pinches the sides all the way in, 0.5 leaves them
+    /// straight and the star a diamond.
+    static let starPinch: CGFloat = 0.2
+
     /// How far the lit face sits from the rim behind it: `width` points away from
     /// the shadow, `height` points up. What the face leaves uncovered is the rim,
     /// a thin crescent hugging the shaded edge. Downward-positive, like `shadowDrop`.
@@ -160,7 +212,8 @@ private extension CALayer {
 
 open class DaySwitch: PlatformControl {
     private lazy var mainLayer = createMainLayer()
-    private lazy var sceneryLayer = createSceneryLayer()
+    private lazy var daySceneryLayer = createDaySceneryLayer()
+    private lazy var nightSceneryLayer = createNightSceneryLayer()
     private lazy var innerShadowLayer = createInnerShadowLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
@@ -233,7 +286,8 @@ private extension DaySwitch {
 #endif
         layer.addSublayer(mainLayer)
         // Scenery, so it goes under the track's own shading and under the indicator.
-        mainLayer.addSublayer(sceneryLayer)
+        mainLayer.addSublayer(daySceneryLayer)
+        mainLayer.addSublayer(nightSceneryLayer)
         mainLayer.addSublayer(innerShadowLayer)
         mainLayer.addSublayer(indicatorLayer)
         // The holes and the rim are children of the indicator, so they ride it for
@@ -303,12 +357,15 @@ private extension DaySwitch {
     }
 
     func updateScenery(needsAnimate: Bool) {
-        let opacity: Float = isDayLight ? 1 : 0
-        sceneryLayer.opacity = opacity
+        let dayOpacity: Float = isDayLight ? 1 : 0
+        let nightOpacity: Float = 1 - dayOpacity
+        daySceneryLayer.opacity = dayOpacity
+        nightSceneryLayer.opacity = nightOpacity
         guard needsAnimate else {
             return
         }
-        sceneryLayer.animate("opacity", to: opacity)
+        daySceneryLayer.animate("opacity", to: dayOpacity)
+        nightSceneryLayer.animate("opacity", to: nightOpacity)
     }
 
     func updateRim(needsAnimate: Bool) {
@@ -348,7 +405,8 @@ private extension DaySwitch {
         guard innerShadowLayer.contentsScale != scale else {
             return
         }
-        for layer in [innerShadowLayer, rimLayer, sceneryLayer] + (sceneryLayer.sublayers ?? []) {
+        let scenery = [daySceneryLayer, nightSceneryLayer]
+        for layer in [innerShadowLayer, rimLayer] + scenery + scenery.flatMap({ $0.sublayers ?? [] }) {
             layer.contentsScale = scale
             layer.mask?.contentsScale = scale
         }
@@ -410,7 +468,20 @@ private extension DaySwitch {
         return layer
     }
 
-    func createSceneryLayer() -> CALayer {
+    func createDaySceneryLayer() -> CALayer {
+        createSceneryLayer([createPuffLayer(Constant.cloudShade, color: PlatformColor.Day.cloudShade),
+                            createPuffLayer(Constant.cloud, color: PlatformColor.Day.cloud)]
+                           + Constant.birds.map(createBirdLayer))
+    }
+
+    func createNightSceneryLayer() -> CALayer {
+        createSceneryLayer([createStarLayer(),
+                            createRidgeLayer(Constant.farRidge, color: PlatformColor.Night.mountainFar),
+                            createRidgeLayer(Constant.ridge, color: PlatformColor.Night.mountain)])
+    }
+
+    /// One scene's figures, back to front, clipped to the track.
+    func createSceneryLayer(_ figures: [CALayer]) -> CALayer {
         let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
         let radius = Constant.cornerRadius
 
@@ -421,11 +492,54 @@ private extension DaySwitch {
         let layer = CALayer()
         layer.frame = rect
         layer.mask = mask
-        layer.addSublayer(createPuffLayer(Constant.cloudShade, color: PlatformColor.Day.cloudShade))
-        layer.addSublayer(createPuffLayer(Constant.cloud, color: PlatformColor.Day.cloud))
-        for bird in Constant.birds {
-            layer.addSublayer(createBirdLayer(bird))
+        for figure in figures {
+            layer.addSublayer(figure)
         }
+        return layer
+    }
+
+    func createRidgeLayer(_ ridge: [CGPoint], color: PlatformColor) -> CAShapeLayer {
+        let path = CGMutablePath()
+        path.addLines(between: ridge, transform: Constant.topLeftTransform(in: Constant.height))
+        path.closeSubpath()
+
+        let layer = CAShapeLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        layer.path = path
+        layer.fillColor = color.cgColor
+        return layer
+    }
+
+    /// The stars share a layer: they never overlap, so one path draws them all.
+    func createStarLayer() -> CAShapeLayer {
+        let transform = Constant.topLeftTransform(in: Constant.height)
+        let path = CGMutablePath()
+
+        // Four arms out to the tips, each neighbouring pair joined by a curve that
+        // pulls back in towards the centre, which is what tapers the arms to points.
+        for star in Constant.stars {
+            let (armX, armY) = (star.width / 2, star.height / 2)
+            let (pinchX, pinchY) = (armX * Constant.starPinch, armY * Constant.starPinch)
+            let tips = [CGPoint(x: star.x, y: star.y - armY),
+                        CGPoint(x: star.x + armX, y: star.y),
+                        CGPoint(x: star.x, y: star.y + armY),
+                        CGPoint(x: star.x - armX, y: star.y)]
+            let pinches = [CGPoint(x: star.x + pinchX, y: star.y - pinchY),
+                           CGPoint(x: star.x + pinchX, y: star.y + pinchY),
+                           CGPoint(x: star.x - pinchX, y: star.y + pinchY),
+                           CGPoint(x: star.x - pinchX, y: star.y - pinchY)]
+
+            path.move(to: tips[0], transform: transform)
+            for (index, pinch) in pinches.enumerated() {
+                path.addQuadCurve(to: tips[(index + 1) % tips.count], control: pinch, transform: transform)
+            }
+            path.closeSubpath()
+        }
+
+        let layer = CAShapeLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        layer.path = path
+        layer.fillColor = PlatformColor.Night.star.cgColor
         return layer
     }
 
