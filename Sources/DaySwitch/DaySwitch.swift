@@ -8,14 +8,12 @@
 #if os(macOS)
 import AppKit
 
-public typealias PlatformView = NSView
 public typealias PlatformControl = NSControl
 public typealias PlatformGestureRecognizer = NSGestureRecognizer
 public typealias PlatformColor = NSColor
 #elseif os(iOS)
 import UIKit
 
-public typealias PlatformView = UIView
 public typealias PlatformControl = UIControl
 public typealias PlatformGestureRecognizer = UIGestureRecognizer
 public typealias PlatformColor = UIColor
@@ -54,6 +52,15 @@ enum Constant {
     /// Gap between the track edge and the indicator.
     static let inset: CGFloat = 4
     static let indicatorSize = height - inset * 2
+    /// The track, and the indicator on it, each in its own coordinates. Every figure is
+    /// framed to the whole track and draws in its coordinates, so the design's numbers
+    /// can be used as they are.
+    static let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+    static let indicatorBounds = CGRect(x: 0, y: 0, width: indicatorSize, height: indicatorSize)
+    /// The track's outline, which the scenery and the inner shadow are both clipped to.
+    static let capsule = CGPath(roundedRect: bounds, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+    /// Where the indicator rests at either end of the track.
+    static let indicatorRestX: (day: CGFloat, night: CGFloat) = (inset, width - inset - indicatorSize)
     static let shadowRadius: CGFloat = 2
     static let duration: CFTimeInterval = 0.35
     static let timingFunction = CAMediaTimingFunction(name: .easeIn)
@@ -192,7 +199,7 @@ enum Constant {
     static let rangeExit = CGSize(width: -34, height: 0)
     /// The halo belongs to the sun rather than to the sky, so it leaves with it: the
     /// same trip the indicator makes from one end of the track to the other.
-    static let sunHaloExit = CGSize(width: width - inset * 2 - indicatorSize, height: 0)
+    static let sunHaloExit = CGSize(width: indicatorRestX.night - indicatorRestX.day, height: 0)
 
     /// How far the lit face sits from the rim behind it: `width` points away from
     /// the shadow, `height` points up. What the face leaves uncovered is the rim,
@@ -228,14 +235,13 @@ enum Constant {
 #endif
     }
 
-    /// The same flip for paths, which cannot be repositioned a rect at a time.
-    static func topLeftTransform(in container: CGFloat) -> CGAffineTransform {
+    /// The same flip for paths, which cannot be repositioned a rect at a time. Every
+    /// path here is authored in track coordinates, so the track is the container.
 #if os(macOS)
-        CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: container)
+    static let topLeftTransform = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: height)
 #else
-        .identity
+    static let topLeftTransform = CGAffineTransform.identity
 #endif
-    }
 }
 
 private extension CGRect {
@@ -245,14 +251,52 @@ private extension CGRect {
 }
 
 private extension CALayer {
+    /// Moves a path authored in track coordinates into the layer's own, which is where
+    /// the layer's frame has already put it.
+    func localised(_ path: CGPath) -> CGPath {
+        var offset = CGAffineTransform(translationX: -frame.minX, y: -frame.minY)
+        return path.copy(using: &offset) ?? path
+    }
+
+    /// Clips the layer to `path`, which is in the layer's own coordinates, so the
+    /// layer has to be framed before this is called.
+    func clip(to path: CGPath) {
+        let shape = CAShapeLayer()
+        shape.frame = bounds
+        shape.path = path
+        mask = shape
+    }
+
+    /// Sets a property, and when the change is meant to be seen happening, animates to
+    /// it as well. `Value` is generic rather than `Any` so that the call site's own type
+    /// is what gets boxed: a `Float` written as one stays a `Float`, where `Any` would
+    /// let a literal in a ternary widen it to a `Double` and quietly change the
+    /// animation's end value.
+    func set<Value>(_ keyPath: String, to value: Value, animated: Bool) {
+        setValue(value, forKeyPath: keyPath)
+        guard animated else {
+            return
+        }
+        animate(keyPath, to: value)
+    }
+
     /// Keys the animation on `<keyPath>Anim`, so the key and the property it
     /// animates cannot drift apart.
+    func animationKey(_ keyPath: String) -> String {
+        keyPath + "Anim"
+    }
+
     func animate(_ keyPath: String, to value: Any?) {
         let animation = CABasicAnimation(keyPath: keyPath)
         animation.duration = Constant.duration
         animation.toValue = value
         animation.timingFunction = Constant.timingFunction
-        add(animation, forKey: keyPath + "Anim")
+        add(animation, forKey: animationKey(keyPath))
+    }
+
+    /// Whether `animate` still has one in flight on this property.
+    func isAnimating(_ keyPath: String) -> Bool {
+        animation(forKey: animationKey(keyPath)) != nil
     }
 
     /// The same for motion that never settles: the property swings between the two
@@ -391,20 +435,39 @@ private extension DaySwitch {
     }
 
     func applyState(needsAnimate: Bool) {
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            self?.hideSceneryThatHasLeft()
+        }
         updateMainLayer(needsAnimate: needsAnimate)
         updateIndicator(needsAnimate: needsAnimate)
         updateMoonHole(needsAnimate: needsAnimate)
         updateRim(needsAnimate: needsAnimate)
         updateScenery(needsAnimate: needsAnimate)
+        CATransaction.commit()
+    }
+
+    /// A scene that has faded out is still a tree of perpetual animations, and Core
+    /// Animation has no reason to know that nobody can see them: the birds go on beating
+    /// and the halo goes on breathing behind a transparent layer. Hiding the scene takes
+    /// it out of the render tree instead. The loops keep their own time while it is gone,
+    /// so it comes back in step rather than restarted.
+    ///
+    /// Only once the crossfade is over. Switching back mid-fade leaves the first
+    /// transaction's completion arriving while the second fade is still running, and the
+    /// scene it would hide is still on screen.
+    func hideSceneryThatHasLeft() {
+        guard !daySceneryLayer.isAnimating(#keyPath(CALayer.opacity)) else {
+            return
+        }
+        daySceneryLayer.isHidden = !isDayLight
+        sunHaloClipLayer.isHidden = !isDayLight
+        nightSceneryLayer.isHidden = isDayLight
     }
 
     func updateMainLayer(needsAnimate: Bool) {
         let backgroundColor = isDayLight ? PlatformColor.Day.spaceBar : PlatformColor.Night.spaceBar
-        mainLayer.backgroundColor = backgroundColor.cgColor
-        guard needsAnimate else {
-            return
-        }
-        mainLayer.animate("backgroundColor", to: backgroundColor.cgColor)
+        mainLayer.set(#keyPath(CALayer.backgroundColor), to: backgroundColor.cgColor, animated: needsAnimate)
     }
 
     func updateIndicator(needsAnimate: Bool) {
@@ -412,52 +475,39 @@ private extension DaySwitch {
         let shadowColor = isDayLight ? PlatformColor.Day.sunShadow : PlatformColor.Night.moonShadow
         let shadowOpacity: Float = isDayLight ? 0.25 : 0.2
         let shadowOffset = CGSize(width: isDayLight ? 2 : -2, height: Constant.shadowDrop)
-        var frame = indicatorLayer.frame
-        frame.origin.x = isDayLight ? Constant.inset : Constant.width - Constant.inset - frame.width
+        let restX = isDayLight ? Constant.indicatorRestX.day : Constant.indicatorRestX.night
 
-        indicatorLayer.backgroundColor = backgroundColor.cgColor
-        indicatorLayer.frame = frame
-        indicatorLayer.shadowColor = shadowColor.cgColor
-        indicatorLayer.shadowOpacity = shadowOpacity
-        indicatorLayer.shadowOffset = shadowOffset
-
-        guard needsAnimate else {
-            return
-        }
-        indicatorLayer.animate("backgroundColor", to: backgroundColor.cgColor)
-        indicatorLayer.animate("frame", to: frame)
-        indicatorLayer.animate("shadowColor", to: shadowColor.cgColor)
-        indicatorLayer.animate("shadowOpacity", to: shadowOpacity)
-        indicatorLayer.animate("shadowOffset", to: shadowOffset)
+        indicatorLayer.set(#keyPath(CALayer.backgroundColor), to: backgroundColor.cgColor, animated: needsAnimate)
+        indicatorLayer.set(#keyPath(CALayer.frame),
+                           to: Constant.indicatorBounds.offsetBy(dx: restX, dy: Constant.inset),
+                           animated: needsAnimate)
+        indicatorLayer.set(#keyPath(CALayer.shadowColor), to: shadowColor.cgColor, animated: needsAnimate)
+        indicatorLayer.set(#keyPath(CALayer.shadowOpacity), to: shadowOpacity, animated: needsAnimate)
+        indicatorLayer.set(#keyPath(CALayer.shadowOffset), to: shadowOffset, animated: needsAnimate)
     }
 
     func updateMoonHole(needsAnimate: Bool) {
         let opacity: Float = isDayLight ? 0 : 1
-        moonHoleLayer.opacity = opacity
-        guard needsAnimate else {
-            return
-        }
-        moonHoleLayer.animate("opacity", to: opacity)
+        moonHoleLayer.set(#keyPath(CALayer.opacity), to: opacity, animated: needsAnimate)
     }
 
     func updateScenery(needsAnimate: Bool) {
         let dayOpacity: Float = isDayLight ? 1 : 0
         let nightOpacity: Float = 1 - dayOpacity
-        daySceneryLayer.opacity = dayOpacity
-        nightSceneryLayer.opacity = nightOpacity
+        // Both scenes have to be in the render tree while they cross over each other;
+        // whichever has gone once that is done is put back out of it.
+        for layer in [daySceneryLayer, nightSceneryLayer, sunHaloClipLayer] {
+            layer.isHidden = false
+        }
+        daySceneryLayer.set(#keyPath(CALayer.opacity), to: dayOpacity, animated: needsAnimate)
+        nightSceneryLayer.set(#keyPath(CALayer.opacity), to: nightOpacity, animated: needsAnimate)
         // The clip carries the crossfade, which leaves the glow's own opacity free to
         // do nothing but breathe.
-        sunHaloClipLayer.opacity = dayOpacity
+        sunHaloClipLayer.set(#keyPath(CALayer.opacity), to: dayOpacity, animated: needsAnimate)
         updateExit(of: [sunHaloLayer], by: Constant.sunHaloExit, isShowing: isDayLight, needsAnimate: needsAnimate)
         updateExit(of: cloudLayers, by: Constant.cloudExit, isShowing: isDayLight, needsAnimate: needsAnimate)
         updateExit(of: birdLayers, by: Constant.birdExit, isShowing: isDayLight, needsAnimate: needsAnimate)
         updateExit(of: rangeLayers, by: Constant.rangeExit, isShowing: !isDayLight, needsAnimate: needsAnimate)
-        guard needsAnimate else {
-            return
-        }
-        daySceneryLayer.animate("opacity", to: dayOpacity)
-        nightSceneryLayer.animate("opacity", to: nightOpacity)
-        sunHaloClipLayer.animate("opacity", to: dayOpacity)
     }
 
     /// Figures sit where the design puts them while their scene is showing and off by
@@ -467,33 +517,20 @@ private extension DaySwitch {
     func updateExit(of layers: [CALayer], by offset: CGSize, isShowing: Bool, needsAnimate: Bool) {
         let transform = isShowing ? CATransform3DIdentity : Constant.translation(offset)
         for layer in layers {
-            layer.transform = transform
-            guard needsAnimate else {
-                continue
-            }
-            layer.animate("transform", to: transform)
+            layer.set(#keyPath(CALayer.transform), to: transform, animated: needsAnimate)
         }
     }
 
     func updateRim(needsAnimate: Bool) {
         let fillColor = isDayLight ? PlatformColor.Day.sunRim : PlatformColor.Night.moonRim
-        let path = rimPath()
-
-        rimLayer.fillColor = fillColor.cgColor
-        rimLayer.path = path
-
-        guard needsAnimate else {
-            return
-        }
-        rimLayer.animate("fillColor", to: fillColor.cgColor)
-        rimLayer.animate("path", to: path)
+        rimLayer.set(#keyPath(CAShapeLayer.fillColor), to: fillColor.cgColor, animated: needsAnimate)
+        rimLayer.set(#keyPath(CAShapeLayer.path), to: rimPath(), animated: needsAnimate)
     }
 
     /// The indicator circle with the lit face punched out of it. The face sits on
     /// the side the light comes from, so the crescent left over is the far edge.
     func rimPath() -> CGPath {
-        let size = Constant.indicatorSize
-        let circle = CGRect(x: 0, y: 0, width: size, height: size)
+        let circle = Constant.indicatorBounds
         let face = circle.offsetBy(dx: isDayLight ? -Constant.faceOffset.width : Constant.faceOffset.width,
                                    dy: Constant.vertical(Constant.faceOffset.height))
 
@@ -547,8 +584,8 @@ private extension DaySwitch {
                           duration: Constant.sunHaloDuration)
         for (index, (bird, layer)) in zip(Constant.birds, birdLayers).enumerated() {
             layer.loop("path",
-                       from: birdPath(bird, swing: -Constant.birdSwing),
-                       to: birdPath(bird, swing: Constant.birdSwing),
+                       from: layer.localised(birdPath(bird, swing: -Constant.birdSwing)),
+                       to: layer.localised(birdPath(bird, swing: Constant.birdSwing)),
                        duration: Constant.birdFlapDuration,
                        phase: Double(index) / Double(birdLayers.count))
         }
@@ -576,7 +613,7 @@ private extension DaySwitch {
     }
 
     func createInnerShadowLayer() -> CAShapeLayer {
-        let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        let rect = Constant.bounds
         let radius = Constant.cornerRadius
 
         // Even-odd fill of "everything outside the capsule" casts its shadow inwards,
@@ -591,10 +628,6 @@ private extension DaySwitch {
         path.addRect(rect.insetBy(dx: -radius, dy: -radius))
         path.addPath(CGPath(roundedRect: holeRect, cornerWidth: radius + inset, cornerHeight: radius + inset, transform: nil))
 
-        let mask = CAShapeLayer()
-        mask.frame = rect
-        mask.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-
         let layer = CAShapeLayer()
         layer.frame = rect
         layer.path = path
@@ -604,7 +637,7 @@ private extension DaySwitch {
         layer.shadowOffset = .zero
         layer.shadowOpacity = 0.2
         layer.shadowRadius = Constant.shadowRadius
-        layer.mask = mask
+        layer.clip(to: Constant.capsule)
         return layer
     }
 
@@ -612,64 +645,62 @@ private extension DaySwitch {
     /// the halo amounts to. The clip stays put while what is inside it moves, which is
     /// what lets a figure run off the track and be trimmed by it.
     func createSceneryLayer(_ figures: [CALayer]) -> CALayer {
-        let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        let radius = Constant.cornerRadius
-
-        let mask = CAShapeLayer()
-        mask.frame = rect
-        mask.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-
         let layer = CALayer()
-        layer.frame = rect
-        layer.mask = mask
+        layer.frame = Constant.bounds
+        layer.clip(to: Constant.capsule)
         for figure in figures {
             layer.addSublayer(figure)
         }
         return layer
     }
 
-    func createRidgeLayer(_ ridge: [CGPoint], color: PlatformColor) -> CAShapeLayer {
-        let path = CGMutablePath()
-        path.addLines(between: ridge, transform: Constant.topLeftTransform(in: Constant.height))
-        path.closeSubpath()
-
+    /// A figure, framed to what it draws rather than to the whole track, so it carries
+    /// the glyph and not the sky behind it. Paths are authored in track coordinates —
+    /// the design's own numbers — and the frame takes its origin back out of them.
+    /// `box` is for a figure that moves inside its layer and so needs room beyond the
+    /// pose it is built in.
+    func createFigureLayer(_ path: CGPath, color: PlatformColor, in box: CGRect? = nil) -> CAShapeLayer {
         let layer = CAShapeLayer()
-        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        layer.path = path
+        layer.frame = box ?? path.boundingBox
+        layer.path = layer.localised(path)
         layer.fillColor = color.cgColor
         return layer
+    }
+
+    func createRidgeLayer(_ ridge: [CGPoint], color: PlatformColor) -> CAShapeLayer {
+        let path = CGMutablePath()
+        path.addLines(between: ridge, transform: Constant.topLeftTransform)
+        path.closeSubpath()
+        return createFigureLayer(path, color: color)
     }
 
     /// One star. They never overlap, so a single path could draw them all, but they
     /// blink on their own schedules and an opacity is a per-layer thing.
     func createStarLayer(_ star: Constant.Star) -> CAShapeLayer {
-        let transform = Constant.topLeftTransform(in: Constant.height)
+        let transform = Constant.topLeftTransform
 
-        // Four arms out to the tips, each neighbouring pair joined by a curve that
-        // pulls back in towards the centre, which is what tapers the arms to points.
-        let (armX, armY) = (star.width / 2, star.height / 2)
-        let (pinchX, pinchY) = (armX * Constant.starPinch, armY * Constant.starPinch)
-        let tips = [CGPoint(x: star.x, y: star.y - armY),
-                    CGPoint(x: star.x + armX, y: star.y),
-                    CGPoint(x: star.x, y: star.y + armY),
-                    CGPoint(x: star.x - armX, y: star.y)]
-        let pinches = [CGPoint(x: star.x + pinchX, y: star.y - pinchY),
-                       CGPoint(x: star.x + pinchX, y: star.y + pinchY),
-                       CGPoint(x: star.x - pinchX, y: star.y + pinchY),
-                       CGPoint(x: star.x - pinchX, y: star.y - pinchY)]
+        // Four arms out to the tips, each neighbouring pair joined by a curve that pulls
+        // back in towards the centre, which is what tapers the arms to points. The
+        // control between two arms is those two added together and reeled back in.
+        let arms = [CGVector(dx: 0, dy: -star.height / 2),
+                    CGVector(dx: star.width / 2, dy: 0),
+                    CGVector(dx: 0, dy: star.height / 2),
+                    CGVector(dx: -star.width / 2, dy: 0)]
+        func point(along arm: CGVector, out reach: CGFloat = 1) -> CGPoint {
+            CGPoint(x: star.x + arm.dx * reach, y: star.y + arm.dy * reach)
+        }
 
         let path = CGMutablePath()
-        path.move(to: tips[0], transform: transform)
-        for (index, pinch) in pinches.enumerated() {
-            path.addQuadCurve(to: tips[(index + 1) % tips.count], control: pinch, transform: transform)
+        path.move(to: point(along: arms[0]), transform: transform)
+        for (index, arm) in arms.enumerated() {
+            let next = arms[(index + 1) % arms.count]
+            let between = CGVector(dx: arm.dx + next.dx, dy: arm.dy + next.dy)
+            path.addQuadCurve(to: point(along: next),
+                              control: point(along: between, out: Constant.starPinch),
+                              transform: transform)
         }
         path.closeSubpath()
-
-        let layer = CAShapeLayer()
-        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        layer.path = path
-        layer.fillColor = PlatformColor.Night.star.cgColor
-        return layer
+        return createFigureLayer(path, color: PlatformColor.Night.star)
     }
 
     /// The sun's halo. White, the same as the cloud and the birds, so that thinning it
@@ -711,11 +742,11 @@ private extension DaySwitch {
     }
 
     func createBirdLayer(_ bird: Constant.Bird) -> CAShapeLayer {
-        let layer = CAShapeLayer()
-        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        layer.path = birdPath(bird)
-        layer.fillColor = PlatformColor.Day.cloud.cgColor
-        return layer
+        // The wings beat past the pose the glyph is built in, so the layer is sized to
+        // the whole swing rather than to where the path happens to start.
+        let box = birdPath(bird, swing: -Constant.birdSwing).boundingBox
+            .union(birdPath(bird, swing: Constant.birdSwing).boundingBox)
+        return createFigureLayer(birdPath(bird), color: PlatformColor.Day.cloud, in: box)
     }
 
     /// The bird glyph, its wings carried `swing` points from where the design rests
@@ -725,7 +756,7 @@ private extension DaySwitch {
         let scale = bird.width / Constant.birdWidth
         let placement = CGAffineTransform(translationX: bird.x, y: bird.y)
             .scaledBy(x: scale, y: scale)
-            .concatenating(Constant.topLeftTransform(in: Constant.height))
+            .concatenating(Constant.topLeftTransform)
 
         // Wings dip, rise and dip again across the box: the tips hang at `tip`,
         // the two meet in the middle at `join`, and `lift` pulls each one up in
@@ -740,17 +771,18 @@ private extension DaySwitch {
         // the body they meet at, where moving the two together would just bob the glyph.
         let (tipY, liftY) = (tip + swing, lift + swing / 2)
 
+        // A point in the glyph's own units, placed on the track.
+        func at(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: x, y: y).applying(placement)
+        }
+
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: 0, y: tipY), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width / 2, y: join),
-                          control: CGPoint(x: width / 4, y: liftY), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width, y: tipY),
-                          control: CGPoint(x: width * 3 / 4, y: liftY), transform: placement)
-        path.addLine(to: CGPoint(x: width, y: tipY + depth), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width / 2, y: join + depth),
-                          control: CGPoint(x: width * 3 / 4, y: liftY + depth), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: 0, y: tipY + depth),
-                          control: CGPoint(x: width / 4, y: liftY + depth), transform: placement)
+        path.move(to: at(0, tipY))
+        path.addQuadCurve(to: at(width / 2, join), control: at(width / 4, liftY))
+        path.addQuadCurve(to: at(width, tipY), control: at(width * 3 / 4, liftY))
+        path.addLine(to: at(width, tipY + depth))
+        path.addQuadCurve(to: at(width / 2, join + depth), control: at(width * 3 / 4, liftY + depth))
+        path.addQuadCurve(to: at(0, tipY + depth), control: at(width / 4, liftY + depth))
         path.closeSubpath()
         return path
     }
@@ -765,51 +797,38 @@ private extension DaySwitch {
                                        width: puff.diameter,
                                        height: puff.diameter))
         }
-
-        let layer = CAShapeLayer()
-        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        layer.path = path
-        layer.fillColor = color.cgColor
-        return layer
+        return createFigureLayer(path, color: color)
     }
 
     func createIndicatorLayer() -> CALayer {
-        let size = Constant.indicatorSize
         let layer = CALayer()
-        layer.frame = CGRect(x: Constant.inset, y: Constant.inset, width: size, height: size)
-        layer.cornerRadius = size / 2
+        layer.frame = Constant.indicatorBounds.offsetBy(dx: Constant.indicatorRestX.day, dy: Constant.inset)
+        layer.cornerRadius = Constant.indicatorSize / 2
         layer.shadowRadius = Constant.shadowRadius
         // The silhouette is a known circle, so hand it over rather than making
         // Core Animation blur the layer's alpha channel offscreen every frame.
-        layer.shadowPath = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: size, height: size), transform: nil)
+        layer.shadowPath = CGPath(ellipseIn: Constant.indicatorBounds, transform: nil)
         return layer
     }
 
     func createRimLayer() -> CAShapeLayer {
-        let rect = CGRect(x: 0, y: 0, width: Constant.indicatorSize, height: Constant.indicatorSize)
-
-        // Even-odd over the two circles also fills the sliver of the face that
-        // overhangs the indicator; the mask trims that back off.
-        let mask = CAShapeLayer()
-        mask.frame = rect
-        mask.path = CGPath(ellipseIn: rect, transform: nil)
-
         let layer = CAShapeLayer()
-        layer.frame = rect
+        layer.frame = Constant.indicatorBounds
         layer.fillRule = .evenOdd
-        layer.mask = mask
+        // Even-odd over the two circles also fills the sliver of the face that
+        // overhangs the indicator; the clip trims that back off.
+        layer.clip(to: CGPath(ellipseIn: Constant.indicatorBounds, transform: nil))
         return layer
     }
 
     func createMoonHoleLayer() -> CALayer {
-        let size = Constant.indicatorSize
         let layer = CALayer()
-        layer.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        layer.frame = Constant.indicatorBounds
         for hole in Constant.moonHoles {
             let holeLayer = CALayer()
             holeLayer.backgroundColor = PlatformColor.Night.hole.cgColor
             holeLayer.frame = CGRect(x: hole.x,
-                                     y: Constant.y(fromTop: hole.y, height: hole.diameter, in: size),
+                                     y: Constant.y(fromTop: hole.y, height: hole.diameter, in: Constant.indicatorSize),
                                      width: hole.diameter,
                                      height: hole.diameter)
             holeLayer.cornerRadius = hole.diameter / 2
