@@ -7,18 +7,15 @@
 
 import SwiftUI
 import Combine
-#if os(macOS)
-import AppKit
-#endif
-#if os(iOS)
-import UIKit
-#endif
 
 #if os(macOS)
+import AppKit
+
 @available(macOS 10.15, *)
 public typealias PlatformViewRepresentable = NSViewRepresentable
-#endif
-#if os(iOS)
+#else
+import UIKit
+
 @available(iOS 13, *)
 public typealias PlatformViewRepresentable = UIViewRepresentable
 #endif
@@ -44,8 +41,7 @@ public struct DayToggle: PlatformViewRepresentable {
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: DaySwitch, context: Context) -> CGSize? {
         sizeThatFits(proposal, platformView: nsView, context: context)
     }
-#endif
-#if os(iOS)
+#else
     public func makeUIView(context: Context) -> DaySwitch {
         makePlatformView(context: context)
     }
@@ -59,24 +55,21 @@ public struct DayToggle: PlatformViewRepresentable {
         sizeThatFits(proposal, platformView: uiView, context: context)
     }
 #endif
-    func makePlatformView(context: Context) -> DaySwitch {
+
+    private func makePlatformView(context: Context) -> DaySwitch {
         let view = DaySwitch(frame: CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height))
         view.isDayLight = isDayLight
         context.coordinator.observe(from: view)
         return view
     }
 
-    func updatePlatformView(_ view: DaySwitch, context: Context) {
+    private func updatePlatformView(_ view: DaySwitch, context: Context) {
         view.isDayLight = isDayLight
     }
 
     @available(macOS 13.0, iOS 16.0, *)
-    func sizeThatFits(_ proposal: ProposedViewSize, platformView: DaySwitch, context: Context) -> CGSize? {
-        if let width = proposal.width, let height = proposal.height {
-            return CGSize(width: width, height: height)
-        } else {
-            return CGSize(width: Constant.width, height: Constant.height)
-        }
+    private func sizeThatFits(_ proposal: ProposedViewSize, platformView: DaySwitch, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions(by: platformView.intrinsicContentSize)
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -86,19 +79,18 @@ public struct DayToggle: PlatformViewRepresentable {
     public class Coordinator {
         @Binding var isDayLight: Bool
 
-        var cancellables = Set<AnyCancellable>()
+        private var cancellable: AnyCancellable?
 
         init(isDayLight: Binding<Bool>) {
             self._isDayLight = isDayLight
         }
 
         func observe(from view: DaySwitch) {
-            view.publisher(for: \.isDayLight)
+            cancellable = view.publisher(for: \.isDayLight)
                 .receive(on: DispatchQueue.main)
-                .sink(receiveValue: { [weak self] value in
+                .sink { [weak self] value in
                     self?.isDayLight = value
-                })
-                .store(in: &cancellables)
+                }
         }
     }
 }
