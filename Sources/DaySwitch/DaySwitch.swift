@@ -57,6 +57,9 @@ enum Constant {
     static let shadowRadius: CGFloat = 2
     static let duration: CFTimeInterval = 0.35
     static let timingFunction = CAMediaTimingFunction(name: .easeIn)
+    /// Idle motion swings out and comes back, so it wants to ease out of each end of
+    /// the swing as well as into it.
+    static let idleTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
 
     /// A circle anchored by the top-left corner of its bounding box.
     typealias Circle = (x: CGFloat, y: CGFloat, diameter: CGFloat)
@@ -104,6 +107,12 @@ enum Constant {
     /// far the band drops below the curve that shapes it.
     static let birdWidth: CGFloat = 8
     static let birdDepth: CGFloat = 1
+
+    /// A wingbeat carries the tips this far either side of the resting glyph, in the
+    /// same authored units as `birdWidth`, and takes this long to get from one end of
+    /// the swing to the other, so a whole beat is twice that.
+    static let birdSwing: CGFloat = 1.5
+    static let birdFlapDuration: CFTimeInterval = 0.3
 
     /// The ridge line of the near range, in the same top-left track coordinates as
     /// the clouds. Closing the shape draws a straight line from the last point back
@@ -153,6 +162,38 @@ enum Constant {
     /// straight and the star a diamond.
     static let starPinch: CGFloat = 0.2
 
+    /// A blink takes a star down to `starDim` and back. Each star takes
+    /// `starBlinkSpread` longer over it than the one before, so the field drifts out
+    /// of step instead of pulsing as one.
+    static let starDim: Float = 0.15
+    static let starBlinkDuration: CFTimeInterval = 0.85
+    static let starBlinkSpread: CFTimeInterval = 0.19
+
+    /// The halo around the sun: a glow that leaves the sun's rim at full strength and
+    /// falls away from there, so it shims into the disc instead of ringing it. The
+    /// indicator and the track's left cap are concentric — the sun's rim sits 26 out
+    /// from the centre and the cap 30 — so the band it has to work in is even the whole
+    /// way round. It reaches past that band, which is what keeps the falloff still
+    /// going where the capsule cuts it off rather than stopping short of the edge.
+    static let sunHaloCenter = CGPoint(x: inset + indicatorSize / 2, y: height / 2)
+    static let sunHaloReach: (rest: CGFloat, swell: CGFloat) = (31, 36)
+    static let sunHaloOpacity: (rest: CGFloat, swell: CGFloat) = (0.35, 0.75)
+    /// Half a breath: the glow swells and settles back over twice this.
+    static let sunHaloDuration: CFTimeInterval = 1.1
+
+    /// Where a scene's figures head as it gives way to the other one, in track points
+    /// from where they rest. Downward-positive, like `shadowDrop`. The birds climb out
+    /// of the top-right corner and the cloud slides off the right edge, both away from
+    /// the sun they leave behind; the ranges go the other way, off the left edge they
+    /// already sit against. The crossfade runs alongside, so none of them has to reach
+    /// cover.
+    static let cloudExit = CGSize(width: 34, height: 0)
+    static let birdExit = CGSize(width: 26, height: -24)
+    static let rangeExit = CGSize(width: -34, height: 0)
+    /// The halo belongs to the sun rather than to the sky, so it leaves with it: the
+    /// same trip the indicator makes from one end of the track to the other.
+    static let sunHaloExit = CGSize(width: width - inset * 2 - indicatorSize, height: 0)
+
     /// How far the lit face sits from the rim behind it: `width` points away from
     /// the shadow, `height` points up. What the face leaves uncovered is the rim,
     /// a thin crescent hugging the shaded edge. Downward-positive, like `shadowDrop`.
@@ -172,6 +213,11 @@ enum Constant {
     }
 
     static let shadowDrop = vertical(2)
+
+    /// A downward-positive offset as a layer transform in the platform's coordinate space.
+    static func translation(_ offset: CGSize) -> CATransform3D {
+        CATransform3DMakeTranslation(offset.width, vertical(offset.height), 0)
+    }
 
     /// Converts a top-anchored `y` into the platform's layer coordinate space.
     static func y(fromTop top: CGFloat, height: CGFloat, in container: CGFloat) -> CGFloat {
@@ -208,12 +254,40 @@ private extension CALayer {
         animation.timingFunction = Constant.timingFunction
         add(animation, forKey: keyPath + "Anim")
     }
+
+    /// The same for motion that never settles: the property swings between the two
+    /// values for as long as the layer is around, `duration` to a swing, starting
+    /// `phase` of the way through one. Only the presented value moves, so the layer
+    /// still reads as the design has it.
+    func loop(_ keyPath: String, from: Any?, to: Any?, duration: CFTimeInterval, phase: Double = 0) {
+        let animation = CABasicAnimation(keyPath: keyPath)
+        animation.duration = duration
+        animation.fromValue = from
+        animation.toValue = to
+        animation.timingFunction = Constant.idleTimingFunction
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        animation.timeOffset = duration * phase
+        add(animation, forKey: keyPath + "Loop")
+    }
 }
 
 open class DaySwitch: PlatformControl {
     private lazy var mainLayer = createMainLayer()
-    private lazy var daySceneryLayer = createDaySceneryLayer()
-    private lazy var nightSceneryLayer = createNightSceneryLayer()
+    // The figures are held on to a scene at a time: each group leaves its own way
+    // when the scene it belongs to does.
+    // The halo rides above the track's inner shadow rather than in the day scene, so
+    // it needs a clip of its own; the glow inside it is what moves and breathes.
+    private lazy var sunHaloLayer = createSunHaloLayer()
+    private lazy var sunHaloClipLayer = createSceneryLayer([sunHaloLayer])
+    private lazy var cloudLayers = [createPuffLayer(Constant.cloudShade, color: PlatformColor.Day.cloudShade),
+                                    createPuffLayer(Constant.cloud, color: PlatformColor.Day.cloud)]
+    private lazy var birdLayers = Constant.birds.map(createBirdLayer)
+    private lazy var starLayers = Constant.stars.map(createStarLayer)
+    private lazy var rangeLayers = [createRidgeLayer(Constant.farRidge, color: PlatformColor.Night.mountainFar),
+                                    createRidgeLayer(Constant.ridge, color: PlatformColor.Night.mountain)]
+    private lazy var daySceneryLayer = createSceneryLayer(cloudLayers + birdLayers)
+    private lazy var nightSceneryLayer = createSceneryLayer(starLayers + rangeLayers)
     private lazy var innerShadowLayer = createInnerShadowLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
@@ -289,6 +363,9 @@ private extension DaySwitch {
         mainLayer.addSublayer(daySceneryLayer)
         mainLayer.addSublayer(nightSceneryLayer)
         mainLayer.addSublayer(innerShadowLayer)
+        // Over that shadow: the halo works the same band of track the shadow darkens,
+        // and underneath it the glow comes out grubby rather than bright.
+        mainLayer.addSublayer(sunHaloClipLayer)
         mainLayer.addSublayer(indicatorLayer)
         // The holes and the rim are children of the indicator, so they ride it for
         // free — both at rest and through the slide animation.
@@ -298,6 +375,13 @@ private extension DaySwitch {
         layoutMainLayer()
         applyState(needsAnimate: false)
         updateContentsScale()
+        startIdleAnimations()
+#if os(iOS)
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(startIdleAnimations),
+                                               name: UIApplication.didBecomeActiveNotification,
+                                               object: nil)
+#endif
     }
 
     /// `mainLayer` is the only layer whose geometry depends on `bounds`; every
@@ -361,11 +445,34 @@ private extension DaySwitch {
         let nightOpacity: Float = 1 - dayOpacity
         daySceneryLayer.opacity = dayOpacity
         nightSceneryLayer.opacity = nightOpacity
+        // The clip carries the crossfade, which leaves the glow's own opacity free to
+        // do nothing but breathe.
+        sunHaloClipLayer.opacity = dayOpacity
+        updateExit(of: [sunHaloLayer], by: Constant.sunHaloExit, isShowing: isDayLight, needsAnimate: needsAnimate)
+        updateExit(of: cloudLayers, by: Constant.cloudExit, isShowing: isDayLight, needsAnimate: needsAnimate)
+        updateExit(of: birdLayers, by: Constant.birdExit, isShowing: isDayLight, needsAnimate: needsAnimate)
+        updateExit(of: rangeLayers, by: Constant.rangeExit, isShowing: !isDayLight, needsAnimate: needsAnimate)
         guard needsAnimate else {
             return
         }
         daySceneryLayer.animate("opacity", to: dayOpacity)
         nightSceneryLayer.animate("opacity", to: nightOpacity)
+        sunHaloClipLayer.animate("opacity", to: dayOpacity)
+    }
+
+    /// Figures sit where the design puts them while their scene is showing and off by
+    /// `offset` while it is not, so a switch carries them out that way and a switch
+    /// back brings them in from it, under the crossfade either way. The stars are left
+    /// out: they have nowhere to go, they only fade.
+    func updateExit(of layers: [CALayer], by offset: CGSize, isShowing: Bool, needsAnimate: Bool) {
+        let transform = isShowing ? CATransform3DIdentity : Constant.translation(offset)
+        for layer in layers {
+            layer.transform = transform
+            guard needsAnimate else {
+                continue
+            }
+            layer.animate("transform", to: transform)
+        }
     }
 
     func updateRim(needsAnimate: Bool) {
@@ -405,7 +512,7 @@ private extension DaySwitch {
         guard innerShadowLayer.contentsScale != scale else {
             return
         }
-        let scenery = [daySceneryLayer, nightSceneryLayer]
+        let scenery = [daySceneryLayer, nightSceneryLayer, sunHaloClipLayer]
         for layer in [innerShadowLayer, rimLayer] + scenery + scenery.flatMap({ $0.sublayers ?? [] }) {
             layer.contentsScale = scale
             layer.mask?.contentsScale = scale
@@ -419,6 +526,39 @@ private extension DaySwitch {
         let scale = traitCollection.displayScale
         return scale > 0 ? scale : 2
 #endif
+    }
+
+    /// The motion each scene keeps up while it is showing: the birds beat their wings
+    /// and the stars blink, each slightly out of step with the rest of its group so
+    /// neither reads as one figure repeated. iOS strips animations off layers when the
+    /// app goes to the background, so this runs again on the way back rather than only
+    /// at setup.
+    @objc
+    func startIdleAnimations() {
+        // Both halves of the breath run off the one duration, so the glow reaches its
+        // furthest exactly when it is at its brightest.
+        sunHaloLayer.loop("locations",
+                          from: sunHaloLocations(reach: Constant.sunHaloReach.rest),
+                          to: sunHaloLocations(reach: Constant.sunHaloReach.swell),
+                          duration: Constant.sunHaloDuration)
+        sunHaloLayer.loop("colors",
+                          from: sunHaloColors(alpha: Constant.sunHaloOpacity.rest),
+                          to: sunHaloColors(alpha: Constant.sunHaloOpacity.swell),
+                          duration: Constant.sunHaloDuration)
+        for (index, (bird, layer)) in zip(Constant.birds, birdLayers).enumerated() {
+            layer.loop("path",
+                       from: birdPath(bird, swing: -Constant.birdSwing),
+                       to: birdPath(bird, swing: Constant.birdSwing),
+                       duration: Constant.birdFlapDuration,
+                       phase: Double(index) / Double(birdLayers.count))
+        }
+        for (index, layer) in starLayers.enumerated() {
+            layer.loop("opacity",
+                       from: Float(1),
+                       to: Constant.starDim,
+                       duration: Constant.starBlinkDuration + Double(index) * Constant.starBlinkSpread,
+                       phase: Double(index) / Double(starLayers.count))
+        }
     }
 
     @objc
@@ -468,19 +608,9 @@ private extension DaySwitch {
         return layer
     }
 
-    func createDaySceneryLayer() -> CALayer {
-        createSceneryLayer([createPuffLayer(Constant.cloudShade, color: PlatformColor.Day.cloudShade),
-                            createPuffLayer(Constant.cloud, color: PlatformColor.Day.cloud)]
-                           + Constant.birds.map(createBirdLayer))
-    }
-
-    func createNightSceneryLayer() -> CALayer {
-        createSceneryLayer([createStarLayer(),
-                            createRidgeLayer(Constant.farRidge, color: PlatformColor.Night.mountainFar),
-                            createRidgeLayer(Constant.ridge, color: PlatformColor.Night.mountain)])
-    }
-
-    /// One scene's figures, back to front, clipped to the track.
+    /// Figures, back to front, clipped to the track: a whole scene of them, or the one
+    /// the halo amounts to. The clip stays put while what is inside it moves, which is
+    /// what lets a figure run off the track and be trimmed by it.
     func createSceneryLayer(_ figures: [CALayer]) -> CALayer {
         let rect = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
         let radius = Constant.cornerRadius
@@ -510,31 +640,30 @@ private extension DaySwitch {
         return layer
     }
 
-    /// The stars share a layer: they never overlap, so one path draws them all.
-    func createStarLayer() -> CAShapeLayer {
+    /// One star. They never overlap, so a single path could draw them all, but they
+    /// blink on their own schedules and an opacity is a per-layer thing.
+    func createStarLayer(_ star: Constant.Star) -> CAShapeLayer {
         let transform = Constant.topLeftTransform(in: Constant.height)
-        let path = CGMutablePath()
 
         // Four arms out to the tips, each neighbouring pair joined by a curve that
         // pulls back in towards the centre, which is what tapers the arms to points.
-        for star in Constant.stars {
-            let (armX, armY) = (star.width / 2, star.height / 2)
-            let (pinchX, pinchY) = (armX * Constant.starPinch, armY * Constant.starPinch)
-            let tips = [CGPoint(x: star.x, y: star.y - armY),
-                        CGPoint(x: star.x + armX, y: star.y),
-                        CGPoint(x: star.x, y: star.y + armY),
-                        CGPoint(x: star.x - armX, y: star.y)]
-            let pinches = [CGPoint(x: star.x + pinchX, y: star.y - pinchY),
-                           CGPoint(x: star.x + pinchX, y: star.y + pinchY),
-                           CGPoint(x: star.x - pinchX, y: star.y + pinchY),
-                           CGPoint(x: star.x - pinchX, y: star.y - pinchY)]
+        let (armX, armY) = (star.width / 2, star.height / 2)
+        let (pinchX, pinchY) = (armX * Constant.starPinch, armY * Constant.starPinch)
+        let tips = [CGPoint(x: star.x, y: star.y - armY),
+                    CGPoint(x: star.x + armX, y: star.y),
+                    CGPoint(x: star.x, y: star.y + armY),
+                    CGPoint(x: star.x - armX, y: star.y)]
+        let pinches = [CGPoint(x: star.x + pinchX, y: star.y - pinchY),
+                       CGPoint(x: star.x + pinchX, y: star.y + pinchY),
+                       CGPoint(x: star.x - pinchX, y: star.y + pinchY),
+                       CGPoint(x: star.x - pinchX, y: star.y - pinchY)]
 
-            path.move(to: tips[0], transform: transform)
-            for (index, pinch) in pinches.enumerated() {
-                path.addQuadCurve(to: tips[(index + 1) % tips.count], control: pinch, transform: transform)
-            }
-            path.closeSubpath()
+        let path = CGMutablePath()
+        path.move(to: tips[0], transform: transform)
+        for (index, pinch) in pinches.enumerated() {
+            path.addQuadCurve(to: tips[(index + 1) % tips.count], control: pinch, transform: transform)
         }
+        path.closeSubpath()
 
         let layer = CAShapeLayer()
         layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
@@ -543,7 +672,56 @@ private extension DaySwitch {
         return layer
     }
 
+    /// The sun's halo. White, the same as the cloud and the birds, so that thinning it
+    /// reads as brightness rather than as a colour of its own — the sun's yellow thinned
+    /// over this sky turns green, since the sky's green channel already outruns it.
+    ///
+    /// Centred on the sun, so it needs no flipping: the track's midline is the same
+    /// distance from either edge.
+    func createSunHaloLayer() -> CAGradientLayer {
+        let reach = Constant.sunHaloReach.swell
+        let center = Constant.sunHaloCenter
+
+        let layer = CAGradientLayer()
+        layer.frame = CGRect(x: center.x - reach, y: center.y - reach, width: reach * 2, height: reach * 2)
+        // A radial gradient runs from `startPoint` out to the ellipse `endPoint` traces,
+        // both in unit coordinates, so these two describe a circle of `reach` about the
+        // centre of a layer that is twice that across.
+        layer.type = .radial
+        layer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.endPoint = CGPoint(x: 1, y: 1)
+        layer.colors = sunHaloColors(alpha: Constant.sunHaloOpacity.rest)
+        layer.locations = sunHaloLocations(reach: Constant.sunHaloReach.rest)
+        return layer
+    }
+
+    /// White fading to a transparent white rather than to `clear`, which is a
+    /// transparent black and would drag the falloff through grey on its way out.
+    func sunHaloColors(alpha: CGFloat) -> [CGColor] {
+        [PlatformColor.Day.cloud.withAlphaComponent(alpha).cgColor,
+         PlatformColor.Day.cloud.withAlphaComponent(0).cgColor]
+    }
+
+    /// Full strength out to the sun's rim, where the disc stops covering it, and spent
+    /// by `reach`. Both as fractions of the layer, which spans the furthest it can reach.
+    func sunHaloLocations(reach: CGFloat) -> [NSNumber] {
+        let extent = Constant.sunHaloReach.swell
+        return [NSNumber(value: Double(Constant.indicatorSize / 2 / extent)),
+                NSNumber(value: Double(reach / extent))]
+    }
+
     func createBirdLayer(_ bird: Constant.Bird) -> CAShapeLayer {
+        let layer = CAShapeLayer()
+        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
+        layer.path = birdPath(bird)
+        layer.fillColor = PlatformColor.Day.cloud.cgColor
+        return layer
+    }
+
+    /// The bird glyph, its wings carried `swing` points from where the design rests
+    /// them. Every swing draws the same run of segments, so one path tweens into the
+    /// next and the wings read as beating rather than cutting from pose to pose.
+    func birdPath(_ bird: Constant.Bird, swing: CGFloat = 0) -> CGPath {
         let scale = bird.width / Constant.birdWidth
         let placement = CGAffineTransform(translationX: bird.x, y: bird.y)
             .scaledBy(x: scale, y: scale)
@@ -557,24 +735,24 @@ private extension DaySwitch {
         let width = Constant.birdWidth
         let depth = Constant.birdDepth
 
-        let path = CGMutablePath()
-        path.move(to: CGPoint(x: 0, y: tip), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width / 2, y: join),
-                          control: CGPoint(x: width / 4, y: lift), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width, y: tip),
-                          control: CGPoint(x: width * 3 / 4, y: lift), transform: placement)
-        path.addLine(to: CGPoint(x: width, y: tip + depth), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: width / 2, y: join + depth),
-                          control: CGPoint(x: width * 3 / 4, y: lift + depth), transform: placement)
-        path.addQuadCurve(to: CGPoint(x: 0, y: tip + depth),
-                          control: CGPoint(x: width / 4, y: lift + depth), transform: placement)
-        path.closeSubpath()
+        // The tips take the whole swing and the curve behind them half of it, each in
+        // proportion to how far out along the wing it sits. That pivots the wings about
+        // the body they meet at, where moving the two together would just bob the glyph.
+        let (tipY, liftY) = (tip + swing, lift + swing / 2)
 
-        let layer = CAShapeLayer()
-        layer.frame = CGRect(x: 0, y: 0, width: Constant.width, height: Constant.height)
-        layer.path = path
-        layer.fillColor = PlatformColor.Day.cloud.cgColor
-        return layer
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: 0, y: tipY), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width / 2, y: join),
+                          control: CGPoint(x: width / 4, y: liftY), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width, y: tipY),
+                          control: CGPoint(x: width * 3 / 4, y: liftY), transform: placement)
+        path.addLine(to: CGPoint(x: width, y: tipY + depth), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: width / 2, y: join + depth),
+                          control: CGPoint(x: width * 3 / 4, y: liftY + depth), transform: placement)
+        path.addQuadCurve(to: CGPoint(x: 0, y: tipY + depth),
+                          control: CGPoint(x: width / 4, y: liftY + depth), transform: placement)
+        path.closeSubpath()
+        return path
     }
 
     /// Overlapping puffs fill as one silhouette under the non-zero rule, which is
