@@ -65,6 +65,7 @@ open class DaySwitch: PlatformControl {
     var boundsObservation: NSKeyValueObservation?
 
     private lazy var mainLayer = CALayer()
+    private lazy var innerShadowLayer = createInnerShadowLayer()
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
     private lazy var cloudLayer = createCloudLayer()
@@ -111,6 +112,19 @@ open class DaySwitch: PlatformControl {
         platformDidMoveToSuperview()
     }
 #endif
+
+#if os(macOS)
+    open override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateContentsScale()
+    }
+#endif
+#if os(iOS)
+    open override func didMoveToWindow() {
+        super.didMoveToWindow()
+        updateContentsScale()
+    }
+#endif
 }
 
 private extension DaySwitch {
@@ -137,6 +151,7 @@ private extension DaySwitch {
 #endif
         layoutLayer(needsAnimate: false)
         layer.addSublayer(mainLayer)
+        mainLayer.addSublayer(innerShadowLayer)
         mainLayer.addSublayer(indicatorLayer)
         mainLayer.addSublayer(moonHoleLayer)
         indicatorLayer.sublayers?.first?.backgroundColor = PlatformColor.Day.darkSun.cgColor
@@ -144,6 +159,7 @@ private extension DaySwitch {
 
     func layoutLayer(needsAnimate: Bool) {
         updateMainLayer(needsAnimate: needsAnimate)
+        updateInnerShadow()
         updateIndicator(needsAnimate: needsAnimate)
         updateCloud(needsAnimate: needsAnimate)
         updateMoonHole(needsAnimate: needsAnimate)
@@ -158,6 +174,55 @@ private extension DaySwitch {
             return
         }
         mainLayer.add(backgroundAnimation(toValue: mainBackgroundColor), forKey: "backgroundColorAnim")
+    }
+
+    func updateInnerShadow() {
+        let rect = mainLayer.bounds
+        let radius = Constant.height / 2
+        let capsulePath = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+
+        // Even-odd fill of "everything outside the capsule" casts its shadow inwards,
+        // the mask then keeps only the part that falls inside the capsule.
+        //
+        // The hole is nudged one point out so the opaque fill stops short of the
+        // mask's antialiased rim. Where the two edges overlap they multiply
+        // (fill alpha * mask alpha) and leave a seam along the curves.
+        let inset: CGFloat = 1
+        let holeRect = rect.insetBy(dx: -inset, dy: -inset)
+        let path = CGMutablePath()
+        path.addRect(rect.insetBy(dx: -radius, dy: -radius))
+        path.addPath(CGPath(roundedRect: holeRect, cornerWidth: radius + inset, cornerHeight: radius + inset, transform: nil))
+
+        innerShadowLayer.frame = rect
+        innerShadowLayer.path = path
+        if let mask = innerShadowLayer.mask as? CAShapeLayer {
+            mask.frame = rect
+            mask.path = capsulePath
+        }
+        updateContentsScale()
+    }
+
+    /// Layers created in code default to `contentsScale` 1, so a `CAShapeLayer` rasterises
+    /// its path at 1x and gets scaled up on a retina display. Against `mainLayer`, whose
+    /// `cornerRadius` the compositor draws at device resolution, that mismatch shows up as
+    /// stair-stepping along the curves.
+    func updateContentsScale() {
+        let scale = platformScale
+        guard innerShadowLayer.contentsScale != scale else {
+            return
+        }
+        innerShadowLayer.contentsScale = scale
+        innerShadowLayer.mask?.contentsScale = scale
+    }
+
+    var platformScale: CGFloat {
+#if os(macOS)
+        return window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+#endif
+#if os(iOS)
+        let scale = traitCollection.displayScale
+        return scale > 0 ? scale : 2
+#endif
     }
 
     func updateIndicator(needsAnimate: Bool) {
@@ -214,6 +279,18 @@ private extension DaySwitch {
         default:
             break
         }
+    }
+
+    func createInnerShadowLayer() -> CAShapeLayer {
+        let layer = CAShapeLayer()
+        layer.fillRule = .evenOdd
+        layer.fillColor = PlatformColor.black.cgColor
+        layer.shadowColor = PlatformColor.black.cgColor
+        layer.shadowOffset = .zero
+        layer.shadowOpacity = 0.2
+        layer.shadowRadius = 2
+        layer.mask = CAShapeLayer()
+        return layer
     }
 
     func createIndicatorLayer() -> CALayer {
