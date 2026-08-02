@@ -426,6 +426,18 @@ open class DaySwitch: PlatformControl {
         super.viewDidMoveToWindow()
         updateIdleAnimations()
     }
+
+    /// Both fire for an ancestor being hidden as well as for the switch itself, which is
+    /// the whole of what the window's own occlusion cannot see.
+    open override func viewDidHide() {
+        super.viewDidHide()
+        updateIdleAnimations()
+    }
+
+    open override func viewDidUnhide() {
+        super.viewDidUnhide()
+        updateIdleAnimations()
+    }
 #else
     open override func layoutSubviews() {
         super.layoutSubviews()
@@ -672,9 +684,17 @@ private extension DaySwitch {
     /// Whether the switch is anywhere anybody could be looking at it. A view out of a
     /// window is nowhere; on macOS a window can also be behind another one, miniaturised
     /// or off in a space that is not the current one, and the system says which.
+    ///
+    /// Occlusion answers for the window, so it takes `isHiddenOrHasHiddenAncestor` as
+    /// well to say anything about where the switch sits inside one. Two ways of being
+    /// out of sight are still missed: scrolled out of a clipping ancestor, and faded to
+    /// nothing. Both are cheap to ask about — `visibleRect`, `alphaValue` — and neither
+    /// has anything that says when the answer changed, so acting on them would mean
+    /// hanging off every enclosing scroll view's bounds or polling, and getting it wrong
+    /// leaves the figures stopped in front of somebody. They are left running.
     var isOnScreen: Bool {
 #if os(macOS)
-        window?.occlusionState.contains(.visible) ?? false
+        window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
 #else
         window != nil
 #endif
