@@ -337,8 +337,11 @@ open class DaySwitch: PlatformControl {
     private lazy var moonHoleLayer = createMoonHoleLayer()
     private lazy var rimLayer = createRimLayer()
 
+    /// `dynamic` as well as `@objc`: without it the setter is called directly rather
+    /// than through the runtime, so KVO never fires and the SwiftUI binding only ever
+    /// sees the value it was made with.
     @objc
-    open var isDayLight: Bool = true {
+    dynamic open var isDayLight: Bool = true {
         didSet {
             guard isDayLight != oldValue else {
                 return
