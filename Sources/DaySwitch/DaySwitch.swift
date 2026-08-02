@@ -376,6 +376,10 @@ open class DaySwitch: PlatformControl {
     private lazy var indicatorLayer = createIndicatorLayer()
     private lazy var moonHoleLayer = createMoonHoleLayer()
     private lazy var rimLayer = createRimLayer()
+#if os(iOS)
+    /// One per layer between the switch and the window; letting them go unregisters them.
+    fileprivate var hidingObservations: [NSKeyValueObservation] = []
+#endif
 
     /// `dynamic` as well as `@objc`: without it the setter is called directly rather
     /// than through the runtime, so KVO never fires and the SwiftUI binding only ever
@@ -447,6 +451,13 @@ open class DaySwitch: PlatformControl {
     open override func didMoveToWindow() {
         super.didMoveToWindow()
         updateContentsScale()
+        watchForHiding()
+        updateIdleAnimations()
+    }
+
+    open override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        watchForHiding()
         updateIdleAnimations()
     }
 #endif
@@ -496,6 +507,16 @@ private extension DaySwitch {
                                                selector: #selector(updateIdleAnimations),
                                                name: UIApplication.didBecomeActiveNotification,
                                                object: nil)
+        // The app being active is not the same as this switch's scene being: on iPad one
+        // scene can be in the background while another is in front of somebody.
+        if #available(iOS 13, *) {
+            for name in [UIScene.didActivateNotification, UIScene.didEnterBackgroundNotification] {
+                NotificationCenter.default.addObserver(self,
+                                                       selector: #selector(updateIdleAnimations),
+                                                       name: name,
+                                                       object: nil)
+            }
+        }
 #endif
     }
 
@@ -686,19 +707,65 @@ private extension DaySwitch {
     /// or off in a space that is not the current one, and the system says which.
     ///
     /// Occlusion answers for the window, so it takes `isHiddenOrHasHiddenAncestor` as
-    /// well to say anything about where the switch sits inside one. Two ways of being
-    /// out of sight are still missed: scrolled out of a clipping ancestor, and faded to
-    /// nothing. Both are cheap to ask about — `visibleRect`, `alphaValue` — and neither
-    /// has anything that says when the answer changed, so acting on them would mean
-    /// hanging off every enclosing scroll view's bounds or polling, and getting it wrong
-    /// leaves the figures stopped in front of somebody. They are left running.
+    /// well to say anything about where the switch sits inside one. UIKit has neither,
+    /// so iOS asks the same two questions its own way: a scene that is not in the
+    /// foreground is the nearest thing it has to an occluded window, and the hidden
+    /// chain is walked by hand, up through the window, which is a view like any other.
+    ///
+    /// One way of being out of sight is missed on both: faded to nothing. `alpha` and
+    /// `alphaValue` are cheap to read and neither notifies at all — the probe for this
+    /// found nothing fires — so acting on it would mean polling, and getting it wrong
+    /// leaves the figures stopped in front of somebody. A faded switch keeps running.
+    /// macOS misses one more, scrolled out of a clipping ancestor, which `visibleRect`
+    /// would answer and nothing announces either.
     var isOnScreen: Bool {
 #if os(macOS)
         window?.occlusionState.contains(.visible) == true && !isHiddenOrHasHiddenAncestor
 #else
-        window != nil
+        guard let window, !isHiddenOrHasHiddenAncestor else {
+            return false
+        }
+        guard #available(iOS 13, *), let scene = window.windowScene else {
+            return true
+        }
+        return scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive
 #endif
     }
+
+#if os(iOS)
+    /// The switch and everything it hangs from, which ends at the window: a `UIWindow`
+    /// is a `UIView`, so hiding one is caught by the same walk.
+    var hierarchy: UnfoldSequence<UIView, (UIView?, Bool)> {
+        sequence(first: self as UIView, next: \.superview)
+    }
+
+    /// UIKit's answer to AppKit's property of the same name, which it has no equivalent
+    /// of. Hiding a view leaves every view under it reporting `isHidden` false, so the
+    /// question can only be asked of the whole chain.
+    var isHiddenOrHasHiddenAncestor: Bool {
+        hierarchy.contains(where: \.isHidden)
+    }
+
+    /// AppKit calls `viewDidHide` for an ancestor being hidden as well as for the view
+    /// itself. UIKit calls nothing at all — not on the view, not on anything under it.
+    /// What does happen is that the hidden view's layer changes, and Core Animation
+    /// implements KVO for its layers' properties, so that is what gets watched: one
+    /// observation per layer up the chain, renewed whenever the switch is moved.
+    ///
+    /// Moving one of those ancestors instead leaves the chain watching layers that are
+    /// no longer above the switch, and UIKit says nothing to a view about its ancestors
+    /// being reparented. So a switch whose ancestor is moved under a hidden view goes on
+    /// looping until the next thing that asks — a move, a scene change, a toggle. It
+    /// errs the safe way: what is left is a loop nobody is watching, never a figure
+    /// stopped in front of somebody.
+    func watchForHiding() {
+        hidingObservations = hierarchy.map { view in
+            view.layer.observe(\.isHidden) { [weak self] _, _ in
+                self?.updateIdleAnimations()
+            }
+        }
+    }
+#endif
 
     func startHaloBreathing() {
         // Both halves of the breath run off the one duration, so the glow reaches its
