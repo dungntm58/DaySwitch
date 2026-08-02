@@ -663,12 +663,16 @@ private extension DaySwitch {
     /// and the stars blink, each slightly out of step with the rest of its group so
     /// neither reads as one figure repeated.
     ///
-    /// A loop nobody can see is still a loop. Core Animation goes on driving the display
-    /// for it whether the scene it belongs to has faded out, the view has left its window
-    /// or the window has gone behind another one — and where iOS at least strips
-    /// animations off on the way to the background, macOS never takes them off at all. So
-    /// each group is put on only while there is somebody who could be looking at it, and
-    /// taken off again when there is not.
+    /// A loop nobody can see is still a loop. Hiding a layer stops it being drawn and
+    /// nothing else: measured by watching whether a presented value still moves, Core
+    /// Animation goes on evaluating a loop whose own layer is hidden, whose scene has
+    /// faded out, whose view is hidden, and whose window has been ordered off the screen.
+    /// The one thing that stops it unaided is the layer leaving the render tree, which
+    /// is to say the view leaving its window. Everything short of that keeps the display
+    /// awake for figures nobody is looking at, and where iOS at least strips animations
+    /// on the way to the background, macOS never takes them off at all. So each group is
+    /// put on only while there is somebody who could be looking at it, and taken off
+    /// again when there is not.
     ///
     /// A group's stagger rides on each layer's own phase rather than on when the group
     /// started, so it comes back the way it went. What a figure does lose is where in its
