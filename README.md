@@ -26,7 +26,7 @@ Swift Package Manager — add the package to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/dungntm58/DaySwitch.git", branch: "main"),
+    .package(url: "https://github.com/dungntm58/DaySwitch.git", from: "0.1.0"),
 ]
 ```
 
