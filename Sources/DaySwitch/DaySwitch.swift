@@ -67,6 +67,13 @@ enum Constant {
     /// Idle motion swings out and comes back, so it wants to ease out of each end of
     /// the swing as well as into it.
     static let idleTimingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    /// None of the idle motion is quick enough to need every frame a 120Hz display can
+    /// give it, and a display asked for fewer is allowed to stay down at that rate. The
+    /// wingbeat is the fastest of them and so the one that would show it first; the glow
+    /// takes a second to breathe and the stars the best part of one to blink.
+    static let idleFrameRate: (halo: Float, star: Float, bird: Float) = (30, 30, 60)
+    /// The slowest any of them may be stepped at, whatever else the display is doing.
+    static let idleFrameRateFloor: Float = 30
 
     /// A circle anchored by the top-left corner of its bounding box.
     typealias Circle = (x: CGFloat, y: CGFloat, diameter: CGFloat)
@@ -260,6 +267,15 @@ private extension CALayer {
 
     /// Clips the layer to `path`, which is in the layer's own coordinates, so the
     /// layer has to be framed before this is called.
+    ///
+    /// Every clip here is the layer's own bounds with the corners taken off, which
+    /// `cornerRadius` and `masksToBounds` would also do, and would do without the render
+    /// pass a mask costs. It is not the same clip, though. A mask multiplies its own
+    /// antialiased edge into the figure's, and the design was traced against the softer
+    /// rim that leaves: swapping the scenery over to a corner radius firms up the pixels
+    /// where the cloud runs off the track and takes the day scene from 2.41 to 2.49 mean
+    /// error against `day.png`. The pass is a fixed 160x60 and the idle loops no longer
+    /// run unwatched, so it is not worth the edge.
     func clip(to path: CGPath) {
         let shape = CAShapeLayer()
         shape.frame = bounds
@@ -300,10 +316,15 @@ private extension CALayer {
     }
 
     /// The same for motion that never settles: the property swings between the two
-    /// values for as long as the layer is around, `duration` to a swing, starting
-    /// `phase` of the way through one. Only the presented value moves, so the layer
-    /// still reads as the design has it.
-    func loop(_ keyPath: String, from: Any?, to: Any?, duration: CFTimeInterval, phase: Double = 0) {
+    /// values for as long as the loop is on the layer, `duration` to a swing, starting
+    /// `phase` of the way through one, and stepped no faster than `frameRate`. Only the
+    /// presented value moves, so the layer still reads as the design has it.
+    func loop(_ keyPath: String,
+              from: Any?,
+              to: Any?,
+              duration: CFTimeInterval,
+              phase: Double = 0,
+              frameRate: Float) {
         let animation = CABasicAnimation(keyPath: keyPath)
         animation.duration = duration
         animation.fromValue = from
@@ -312,7 +333,26 @@ private extension CALayer {
         animation.autoreverses = true
         animation.repeatCount = .infinity
         animation.timeOffset = duration * phase
-        add(animation, forKey: keyPath + "Loop")
+        if #available(macOS 12, iOS 15, *) {
+            animation.preferredFrameRateRange = CAFrameRateRange(minimum: Constant.idleFrameRateFloor,
+                                                                 maximum: frameRate,
+                                                                 preferred: frameRate)
+        }
+        add(animation, forKey: keyPath + Self.loopSuffix)
+    }
+
+    /// Keys every loop on `<keyPath>Loop`, which is what lets them be found again as a
+    /// group without the caller having to remember what it started.
+    static let loopSuffix = "Loop"
+
+    var hasLoops: Bool {
+        animationKeys()?.contains { $0.hasSuffix(Self.loopSuffix) } ?? false
+    }
+
+    func removeLoops() {
+        for key in animationKeys() ?? [] where key.hasSuffix(Self.loopSuffix) {
+            removeAnimation(forKey: key)
+        }
     }
 }
 
@@ -381,6 +421,11 @@ open class DaySwitch: PlatformControl {
         super.viewDidChangeBackingProperties()
         updateContentsScale()
     }
+
+    open override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateIdleAnimations()
+    }
 #else
     open override func layoutSubviews() {
         super.layoutSubviews()
@@ -390,6 +435,7 @@ open class DaySwitch: PlatformControl {
     open override func didMoveToWindow() {
         super.didMoveToWindow()
         updateContentsScale()
+        updateIdleAnimations()
     }
 #endif
 }
@@ -422,10 +468,20 @@ private extension DaySwitch {
         layoutMainLayer()
         applyState(needsAnimate: false)
         updateContentsScale()
-        startIdleAnimations()
-#if os(iOS)
+        updateIdleAnimations()
+        // Which window posted it does not matter: the switch only has to look again at
+        // whether its own is one somebody can see, and occlusion changes are rare enough
+        // that looking is cheaper than keeping track of whose window is whose.
+#if os(macOS)
         NotificationCenter.default.addObserver(self,
-                                               selector: #selector(startIdleAnimations),
+                                               selector: #selector(updateIdleAnimations),
+                                               name: NSWindow.didChangeOcclusionStateNotification,
+                                               object: nil)
+#else
+        // iOS strips animations off layers when the app goes to the background, so the
+        // loops have to go back on on the way in rather than only at setup.
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(updateIdleAnimations),
                                                name: UIApplication.didBecomeActiveNotification,
                                                object: nil)
 #endif
@@ -448,13 +504,14 @@ private extension DaySwitch {
         updateRim(needsAnimate: needsAnimate)
         updateScenery(needsAnimate: needsAnimate)
         CATransaction.commit()
+        // The scene coming back is unhidden by now, so this is where its loops go on.
+        updateIdleAnimations()
     }
 
     /// A scene that has faded out is still a tree of perpetual animations, and Core
     /// Animation has no reason to know that nobody can see them: the birds go on beating
     /// and the halo goes on breathing behind a transparent layer. Hiding the scene takes
-    /// it out of the render tree instead. The loops keep their own time while it is gone,
-    /// so it comes back in step rather than restarted.
+    /// it out of the render tree and taking its loops off stops it asking for frames.
     ///
     /// Only once the crossfade is over. Switching back mid-fade leaves the first
     /// transaction's completion arriving while the second fade is still running, and the
@@ -466,6 +523,7 @@ private extension DaySwitch {
         daySceneryLayer.isHidden = !isDayLight
         sunHaloClipLayer.isHidden = !isDayLight
         nightSceneryLayer.isHidden = isDayLight
+        updateIdleAnimations()
     }
 
     func updateMainLayer(needsAnimate: Bool) {
@@ -570,34 +628,92 @@ private extension DaySwitch {
 
     /// The motion each scene keeps up while it is showing: the birds beat their wings
     /// and the stars blink, each slightly out of step with the rest of its group so
-    /// neither reads as one figure repeated. iOS strips animations off layers when the
-    /// app goes to the background, so this runs again on the way back rather than only
-    /// at setup.
+    /// neither reads as one figure repeated.
+    ///
+    /// A loop nobody can see is still a loop. Core Animation goes on driving the display
+    /// for it whether the scene it belongs to has faded out, the view has left its window
+    /// or the window has gone behind another one — and where iOS at least strips
+    /// animations off on the way to the background, macOS never takes them off at all. So
+    /// each group is put on only while there is somebody who could be looking at it, and
+    /// taken off again when there is not.
+    ///
+    /// A group's stagger rides on each layer's own phase rather than on when the group
+    /// started, so it comes back the way it went. What a figure does lose is where in its
+    /// own swing it was, and it loses that behind a scene nobody is watching.
     @objc
-    func startIdleAnimations() {
+    func updateIdleAnimations() {
+        setLoops(on: [sunHaloLayer],
+                 running: isOnScreen && !sunHaloClipLayer.isHidden,
+                 start: startHaloBreathing)
+        setLoops(on: birdLayers,
+                 running: isOnScreen && !daySceneryLayer.isHidden,
+                 start: startBirdsFlapping)
+        setLoops(on: starLayers,
+                 running: isOnScreen && !nightSceneryLayer.isHidden,
+                 start: startStarsBlinking)
+    }
+
+    /// Puts a group of loops on or takes them off, and leaves a group that is already
+    /// the way it is being asked for alone: a loop re-added would start its swing over,
+    /// and what drives this arrives whether or not anything has actually changed.
+    func setLoops(on layers: [CALayer], running: Bool, start: () -> Void) {
+        guard running != layers.contains(where: \.hasLoops) else {
+            return
+        }
+        guard running else {
+            for layer in layers {
+                layer.removeLoops()
+            }
+            return
+        }
+        start()
+    }
+
+    /// Whether the switch is anywhere anybody could be looking at it. A view out of a
+    /// window is nowhere; on macOS a window can also be behind another one, miniaturised
+    /// or off in a space that is not the current one, and the system says which.
+    var isOnScreen: Bool {
+#if os(macOS)
+        window?.occlusionState.contains(.visible) ?? false
+#else
+        window != nil
+#endif
+    }
+
+    func startHaloBreathing() {
         // Both halves of the breath run off the one duration, so the glow reaches its
         // furthest exactly when it is at its brightest.
         sunHaloLayer.loop("locations",
                           from: sunHaloLocations(reach: Constant.sunHaloReach.rest),
                           to: sunHaloLocations(reach: Constant.sunHaloReach.swell),
-                          duration: Constant.sunHaloDuration)
+                          duration: Constant.sunHaloDuration,
+                          frameRate: Constant.idleFrameRate.halo)
         sunHaloLayer.loop("colors",
                           from: sunHaloColors(alpha: Constant.sunHaloOpacity.rest),
                           to: sunHaloColors(alpha: Constant.sunHaloOpacity.swell),
-                          duration: Constant.sunHaloDuration)
+                          duration: Constant.sunHaloDuration,
+                          frameRate: Constant.idleFrameRate.halo)
+    }
+
+    func startBirdsFlapping() {
         for (index, (bird, layer)) in zip(Constant.birds, birdLayers).enumerated() {
             layer.loop("path",
                        from: layer.localised(birdPath(bird, swing: -Constant.birdSwing)),
                        to: layer.localised(birdPath(bird, swing: Constant.birdSwing)),
                        duration: Constant.birdFlapDuration,
-                       phase: Double(index) / Double(birdLayers.count))
+                       phase: Double(index) / Double(birdLayers.count),
+                       frameRate: Constant.idleFrameRate.bird)
         }
+    }
+
+    func startStarsBlinking() {
         for (index, layer) in starLayers.enumerated() {
             layer.loop("opacity",
                        from: Float(1),
                        to: Constant.starDim,
                        duration: Constant.starBlinkDuration + Double(index) * Constant.starBlinkSpread,
-                       phase: Double(index) / Double(starLayers.count))
+                       phase: Double(index) / Double(starLayers.count),
+                       frameRate: Constant.idleFrameRate.star)
         }
     }
 
